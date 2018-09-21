@@ -1,0 +1,3 @@
+module_loaded("dhd") && rmmod("dhd");
+log(insmod("/lib/modules/dhd.ko","dhd_pkt_filter_enable=0 firmware_path=/system/etc/wifi/bcm4330_sta.bin nvram_path=/system/etc/wifi/nvram_net.txt"),"Loading /lib/modules/dhd.ko module");
+sleep("3");

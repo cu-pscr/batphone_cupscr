@@ -1,0 +1,489 @@
+/*
+Serval DNA operating system services
+Copyright (C) 2010 Paul Gardner-Stephen
+Copyright (C) 2012-2015 Serval Project Inc.
+Copyright (C) 2016-2018 Flinders University
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+*/
+
+#define __SERVAL_DNA__OS_INLINE
+#include "constants.h"
+#include "os.h"
+#include "mem.h"
+#include "str.h"
+#include "log.h"
+#include "strbuf_helpers.h"
+
+#include <assert.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <fcntl.h>
+#include <alloca.h>
+#include <dirent.h>
+#include <time.h>
+#include <string.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#include <inttypes.h> // PRIu32
+#endif
+
+void log_info_mkdir(struct __sourceloc __whence, const char *path, mode_t mode, void *UNUSED(context))
+{
+  INFOF("mkdir %s (mode %04o)", alloca_str_toprint(path), mode);
+}
+
+int _mkdirs(struct __sourceloc __whence, const char *path, mode_t mode, MKDIR_LOG_FUNC *logger, void *log_context)
+{
+  return _mkdirsn(__whence, path, strlen(path), mode, logger, log_context);
+}
+
+int _emkdirs(struct __sourceloc __whence, const char *path, mode_t mode, MKDIR_LOG_FUNC *logger, void *log_context)
+{
+  if (_mkdirs(__whence, path, mode, logger, log_context) == -1)
+    return WHYF_perror("mkdirs(%s,%o)", alloca_str_toprint(path), mode);
+  return 0;
+}
+
+int _emkdirsn(struct __sourceloc __whence, const char *path, size_t len, mode_t mode, MKDIR_LOG_FUNC *logger, void *log_context)
+{
+  if (_mkdirsn(__whence, path, len, mode, logger, log_context) == -1)
+    return WHYF_perror("mkdirsn(%s,%lu,%o)", alloca_toprint(-1, path, len), (unsigned long)len, mode);
+  return 0;
+}
+
+/* This variant must not log anything itself, because it is called by the logging subsystem, and
+ * that would cause infinite recursion!
+ *
+ * The path need not be NUL terminated.
+ *
+ * The logger function pointer is usually NULL, for no logging, but may be any function the caller
+ * supplies (for example, log_info_mkdir).
+ *
+ * @author Andrew Bettison <andrew@servalproject.com>
+ */
+int _mkdirsn(struct __sourceloc whence, const char *path, size_t len, mode_t mode, MKDIR_LOG_FUNC *logger, void *log_context)
+{
+  if (len == 0)
+    errno = EINVAL;
+  else {
+    char *pathfrag = alloca(len + 1);
+    strncpy(pathfrag, path, len)[len] = '\0';
+    if (mkdir(pathfrag, mode) != -1) {
+      if (logger)
+	logger(whence, pathfrag, mode, log_context);
+      return 0;
+    }
+    if (errno == EEXIST) {
+      DIR *d = opendir(pathfrag);
+      if (d) {
+	closedir(d);
+	return 0;
+      }
+    }
+    else if (errno == ENOENT) {
+      const char *lastsep = path + len - 1;
+      while (lastsep != path && *--lastsep != '/')
+	;
+      while (lastsep != path && *--lastsep == '/')
+	;
+      if (lastsep != path) {
+	if (_mkdirsn(whence, path, lastsep - path + 1, mode, logger, log_context) == -1)
+	  return -1;
+	if (mkdir(pathfrag, mode) == -1) {
+	  if (errno == EEXIST)
+	    return 0;
+	  return -1;
+	}
+	if (logger)
+	  logger(whence, pathfrag, mode, log_context);
+	return 0;
+      }
+    }
+  }
+  return -1;
+}
+
+static int copy_file_bytes(struct __sourceloc __whence, const char *oldpath, const char *newpath, int mode){
+  int read_fd = open(oldpath, O_RDONLY);
+  if (read_fd == -1)
+    return WHYF_perror("open(%s)", alloca_str_toprint(oldpath));
+
+  int write_fd = open(newpath, O_WRONLY | O_CREAT | O_EXCL, mode);
+  if (write_fd == -1){
+    close(read_fd);
+    return WHYF_perror("open(%s)", alloca_str_toprint(newpath));
+  }
+
+  uint8_t buff[16*1024];
+  ssize_t r;
+  ssize_t w=0;
+  while(w>=0 && (r = read(read_fd, buff, sizeof buff))>0){
+    off_t offset = 0;
+    while(offset < r && (w = write(write_fd, buff + offset, r - offset))>0)
+      offset+=w;
+    if (w<0)
+      WHY_perror("write()");
+  }
+
+  if (r<0)
+    WHY_perror("read()");
+
+  close(write_fd);
+  close(read_fd);
+
+  if (r<0 || w<0){
+    unlink(newpath);
+    return -1;
+  }
+
+  return 0;
+}
+
+static int move_bytes_recursive(struct __sourceloc __whence, const char *oldpath, const char *newpath, int log_level){
+  struct stat st;
+  if (stat(oldpath, &st)==-1)
+    return WHYF_perror("stat(%s)", alloca_str_toprint(oldpath));
+
+  if (S_ISDIR(st.st_mode)){
+    DIR *dir;
+    struct dirent *dp;
+
+    if (mkdir(newpath, st.st_mode)==-1 && errno!=EEXIST)
+      return WHYF_perror("mkdir(%s)", newpath);
+
+    if (log_level != LOG_LEVEL_SILENT)
+      LOGF(log_level, "mkdir %s (mode %04o)", alloca_str_toprint(newpath), st.st_mode);
+
+    if ((dir = opendir(oldpath)) == NULL)
+      return WHYF_perror("opendir(%s)", alloca_str_toprint(oldpath));
+    errno=0;
+
+    size_t old_len = strlen(oldpath);
+    size_t new_len = strlen(newpath);
+
+    // use static buffers for temporary path construction to reduce stack usage.
+    static char old_buf[400];
+    static char new_buf[400];
+
+    if (oldpath!=old_buf){
+      strcpy(old_buf, oldpath);
+      strcpy(new_buf, newpath);
+    }
+    if (old_buf[old_len - 1]!='/')
+      old_buf[old_len++]='/';
+    old_buf[old_len]='\0';
+    if (new_buf[new_len - 1]!='/')
+      new_buf[new_len++]='/';
+    new_buf[new_len]='\0';
+
+    int r=0;
+    while (r==0 && (dp = readdir(dir)) != NULL) {
+      if (strcmp(dp->d_name,".")==0 || strcmp(dp->d_name,"..")==0)
+	continue;
+
+      strcpy(&old_buf[old_len], dp->d_name);
+      strcpy(&new_buf[new_len], dp->d_name);
+
+      r = move_bytes_recursive(__whence, old_buf, new_buf, log_level);
+    }
+    closedir(dir);
+
+    if (r==0)
+      rmdir(oldpath);
+
+    return r;
+  }
+
+  if (copy_file_bytes(__whence, oldpath, newpath, st.st_mode)==-1)
+    return -1;
+
+  unlink(oldpath);
+
+  if (log_level != LOG_LEVEL_SILENT)
+    LOGF(log_level, "moved %s -> %s", alloca_str_toprint(oldpath), alloca_str_toprint(newpath));
+
+  return 0;
+}
+
+int _erename(struct __sourceloc __whence, const char *oldpath, const char *newpath, int log_level)
+{
+  if (rename(oldpath, newpath) != -1){
+    if (log_level != LOG_LEVEL_SILENT)
+      LOGF(log_level, "renamed %s -> %s", alloca_str_toprint(oldpath), alloca_str_toprint(newpath));
+    return 0;
+  }
+  if (errno != EXDEV)
+    return WHYF_perror("rename(%s,%s)", alloca_str_toprint(oldpath), alloca_str_toprint(newpath));
+  // rename() doesn't move files between filesystems, stream the bytes across the hard way...
+  // TODO test this code path as it occurs on android
+  return move_bytes_recursive(__whence, oldpath, newpath, log_level);
+}
+
+time_ms_t gettime_ms()
+{
+  struct timeval nowtv;
+  // If gettimeofday() fails or returns an invalid value, all else is lost!
+  if (gettimeofday(&nowtv, NULL) == -1)
+    FATAL_perror("gettimeofday");
+  if (nowtv.tv_sec < 0 || nowtv.tv_usec < 0 || nowtv.tv_usec >= 1000000)
+    FATALF("gettimeofday returned tv_sec=%ld tv_usec=%ld", (long)nowtv.tv_sec, (long)nowtv.tv_usec);
+  return nowtv.tv_sec * 1000LL + nowtv.tv_usec / 1000;
+}
+
+time_s_t gettime()
+{
+  struct timeval nowtv;
+  // If gettimeofday() fails or returns an invalid value, all else is lost!
+  if (gettimeofday(&nowtv, NULL) == -1)
+    FATAL_perror("gettimeofday");
+  if (nowtv.tv_sec < 0 || nowtv.tv_usec < 0 || nowtv.tv_usec >= 1000000)
+    FATALF("gettimeofday returned tv_sec=%ld tv_usec=%ld", (long)nowtv.tv_sec, (long)nowtv.tv_usec);
+  return nowtv.tv_sec;
+}
+
+// Returns sleep time remaining.
+time_ms_t sleep_ms(time_ms_t milliseconds)
+{
+  if (milliseconds <= 0)
+    return 0;
+  struct timespec delay;
+  struct timespec remain;
+  delay.tv_sec = milliseconds / 1000;
+  delay.tv_nsec = (milliseconds % 1000) * 1000000;
+  if (nanosleep(&delay, &remain) == -1 && errno != EINTR)
+    FATALF_perror("nanosleep(tv_sec=%ld, tv_nsec=%ld)", delay.tv_sec, delay.tv_nsec);
+  return remain.tv_sec * 1000ull + remain.tv_nsec / 1000000;
+}
+
+struct timeval time_ms_to_timeval(time_ms_t milliseconds)
+{
+  struct timeval tv;
+  tv.tv_sec = milliseconds / 1000;
+  tv.tv_usec = (milliseconds % 1000) * 1000;
+  return tv;
+}
+
+ssize_t read_symlink(const char *path, char *buf, size_t len)
+{
+  if (len == 0) {
+    struct stat stat;
+    if (lstat(path, &stat) == -1)
+      return WHYF_perror("lstat(%s)", alloca_str_toprint(path));
+    return stat.st_size + 1; // allow for terminating nul
+  }
+  ssize_t nr = readlink(path, buf, len);
+  if (nr == -1)
+    return WHYF_perror("readlink(%s,%p,%zu)", alloca_str_toprint(path), buf, len);
+  if ((size_t)nr >= len)
+    return WHYF("buffer overrun from readlink(%s, len=%zu)", alloca_str_toprint(path), len);
+  buf[nr] = '\0';
+  return nr;
+}
+
+ssize_t read_whole_file(const char *path, unsigned char *buffer, size_t buffer_size)
+{
+  assert(buffer != NULL);
+  assert(buffer_size != 0);
+  if (malloc_read_whole_file(path, &buffer, &buffer_size) == -1)
+    return -1;
+  return buffer_size;
+}
+
+int malloc_read_whole_file(const char *path, unsigned char **bufp, size_t *sizp)
+{
+  int fd = open(path, O_RDONLY);
+  if (fd == -1)
+    return WHYF_perror("open(%d,%s,O_RDONLY)", fd, alloca_str_toprint(path));
+  ssize_t ret;
+  struct stat stat;
+  if (fstat(fd, &stat) == -1)
+    ret = WHYF_perror("fstat(%d)", fd);
+  else if (*bufp != NULL && (size_t)stat.st_size > *sizp)
+    ret = WHYF("file %s (size %zu) is larger than available buffer (%zu)", alloca_str_toprint(path), (size_t)stat.st_size, *sizp);
+  else if (*bufp == NULL && *sizp && (size_t)stat.st_size > *sizp)
+    ret = WHYF("file %s (size %zu) is larger than maximum buffer (%zu)", alloca_str_toprint(path), (size_t)stat.st_size, *sizp);
+  else {
+    *sizp = (size_t)stat.st_size;
+    if (*bufp == NULL && (*bufp = emalloc(*sizp)) == NULL)
+      ret = WHYF("file %s (size %zu) does not fit into memory", alloca_str_toprint(path), *sizp);
+    else {
+      assert(*bufp != NULL);
+      ret = read(fd, *bufp, *sizp);
+      if (ret == -1)
+	ret = WHYF_perror("read(%d,%s,%zu)", fd, alloca_str_toprint(path), *sizp);
+    }
+  }
+  if (close(fd) == -1)
+    ret = WHYF_perror("close(%d)", fd);
+  return ret;
+}
+
+int get_file_meta(const char *path, struct file_meta *metap)
+{
+  struct stat st;
+  if (stat(path, &st) == -1) {
+    if (errno != ENOENT)
+      return WHYF_perror("stat(%s)", path);
+    *metap = FILE_META_NONEXIST;
+  } else {
+    metap->mode = st.st_mode;
+    metap->size = st.st_size;
+    metap->mtime.tv_sec = st.st_mtime;
+    // Truncate to whole seconds to ensure that this code will work on file systems that only have
+    // whole-second time stamp resolution.
+    metap->mtime.tv_nsec = 0;
+  }
+  return 0;
+}
+
+static int cmp_timespec(const struct timespec *a, const struct timespec *b)
+{
+  return a->tv_sec < b->tv_sec ? -1 : a->tv_sec > b->tv_sec ? 1 : a->tv_nsec < b->tv_nsec ? -1 : a->tv_nsec > b->tv_nsec ? 1 : 0;
+}
+
+static void add_timespec(struct timespec *tv, long sec, long nsec)
+{
+  const long NANO = 1000000000;
+  tv->tv_sec += sec;
+  // Bring nsec into range -NANO < nsec < NANO.
+  if (nsec >= NANO) {
+    sec = nsec / NANO;
+    tv->tv_sec += sec;
+    nsec -= sec * NANO;
+  } else if (nsec <= -NANO) {
+    // The C standard does not define whether negative integer division truncates towards negative
+    // infinity or rounds towards zero.  So we have to use positive integer division, which always
+    // truncates towards zero.
+    sec = -nsec / NANO;
+    tv->tv_sec -= sec;
+    nsec += sec * NANO;
+  }
+  assert(nsec > -NANO);
+  assert(nsec < NANO);
+  tv->tv_nsec += nsec;
+  // Bring tv_nsec into range 0 <= tv_nsec < NANO.
+  if (tv->tv_nsec >= NANO) {
+    sec = tv->tv_nsec / NANO;
+    tv->tv_sec += sec;
+    tv->tv_nsec -= sec * NANO;
+  } else if (tv->tv_nsec < 0) {
+    sec = (-tv->tv_nsec + NANO - 1) / NANO;
+    tv->tv_sec -= sec;
+    tv->tv_nsec += sec * NANO;
+  }
+  assert(tv->tv_nsec >= 0);
+  assert(tv->tv_nsec < NANO);
+}
+
+int cmp_file_meta(const struct file_meta *a, const struct file_meta *b)
+{
+  int c = cmp_timespec(&a->mtime, &b->mtime);
+  return c ? c : a->size < b->size ? -1 : a->size > b->size ? 1 : 0;
+}
+
+/* Post-update file meta adjustment.
+ *
+ * If a file's meta information is used to detect changes to the file by polling at regular
+ * intervals, then every update to the file must guarantee to never produce the same meta
+ * information as any prior update.  The typical case is several updates in rapid succession during
+ * one second that do not change the size of the file.  The second and subsequent of these will not
+ * change the file's meta information (size or last-modified time stamp) on file systems that only
+ * have one-second timestamp resolution.
+ *
+ * This function can be called immediately after updating such a file, supplying the meta
+ * information from just prior to the update.  It will alter the file's meta information (last
+ * modified time stamp) to ensure that it differs from the prior meta information.  This typically
+ * involves advancing the file's last-modification time stamp.
+ *
+ * Returns -1 if an error occurs, 1 if it alters the file's meta information, 0 if the current meta
+ * information is already different and did not need alteration.
+ *
+ * @author Andrew Bettison <andrew@servalproject.com>
+ */
+int alter_file_meta(const char *path, const struct file_meta *origp, struct file_meta *metap)
+{
+  long nsec = 1;
+  long sec = 0;
+  // If the file's current last-modified timestamp is not greater than its original, try bumping the
+  // original timestamp by one nanosecond, and if that does not alter the timestamp, the file system
+  // does not support nanosecond timestamps, so try bumping it by one second.
+  while (sec <= 1) {
+    struct file_meta meta;
+    if (get_file_meta(path, &meta) == -1)
+      return -1;
+    if (metap)
+      *metap = meta;
+    if (is_file_meta_nonexist(&meta) || cmp_timespec(&origp->mtime, &meta.mtime) < 0)
+      return 0;
+    meta.mtime = origp->mtime;
+    add_timespec(&meta.mtime, sec, nsec);
+    struct timeval times[2];
+    times[0] = time_ms_to_timeval(gettime_ms());
+    times[1].tv_sec = meta.mtime.tv_sec;
+    times[1].tv_usec = meta.mtime.tv_nsec / 1000;
+    if (utimes(path, times) == -1)
+      return WHYF_perror("utimes(%s,[%s,%s])", alloca_str_toprint(path), alloca_timeval(&times[0]), alloca_timeval(&times[1]));
+    nsec = 0;
+    ++sec;
+  }
+  return 1;
+}
+
+int file_exists(const char *path)
+{
+  struct file_meta meta;
+  return get_file_meta(path, &meta) != -1 && is_file_meta_exists(&meta);
+}
+
+int file_exists_is_regular(const char *path)
+{
+  struct file_meta meta;
+  return get_file_meta(path, &meta) != -1 && is_file_meta_regular(&meta);
+}
+
+int file_exists_is_directory(const char *path)
+{
+  struct file_meta meta;
+  return get_file_meta(path, &meta) != -1 && !is_file_meta_directory(&meta);
+}
+
+ssize_t get_self_executable_path(char *buf, size_t len)
+{
+#if defined(linux)
+  return read_symlink("/proc/self/exe", buf, len);
+#elif defined (__sun__)
+  return read_symlink("/proc/self/path/a.out", buf, len);
+#elif defined (__APPLE__)
+  // Ensure that len is not too large.
+  assert(((int32_t)len)>=0);
+  uint32_t bufsize = len;
+  ssize_t s = _NSGetExecutablePath(buf, &bufsize);
+  // Ensure that _NSGetExecutablePath doesn't return a gigantic value in bufsize that would be
+  // negative when cast.
+  assert(((int32_t)bufsize)>=0);
+  if (len == 0) {
+    if (s != -1)
+      return WHYF("_NSGetExecutablePath(%p, &%zd) returned %zd, expecting -1", buf, len, s);
+    return bufsize;
+  }
+  if (s == -1)
+    return WHYF("_NSGetExecutablePath(%p, &%zd) returned %zd, bufsize=%"PRIu32, buf, len, s, bufsize);
+  return strlen(buf) + 1; // include terminating nul
+#else
+#error Unable to find executable path
+#endif
+}

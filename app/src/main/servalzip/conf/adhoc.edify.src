@@ -1,0 +1,44 @@
+# This script controls actions to be taken when the adhoc is started or stopped.
+# ------------------------------------------------------------------------------------
+# It uses the "edify" language, which is also used for the android OTA update scripts. 
+# See:
+# http://android.git.kernel.org/?p=platform/bootable/recovery.git;a=tree;f=edify;h=04720f8aaa9a5e0079b79f8be7f11b7f74414162;hb=HEAD
+# ------------------------------------------------------------------------------------
+
+#
+# Actions for starting adhoc
+#
+action() == "start" && (
+  #
+  # Set "status"-Property
+  #
+  setprop("adhoc.status","running");
+
+  log("Starting BatPhone");
+
+#TODO which device needs this???
+  is_substring("bahamas", getprop("ro.product.device")) &&
+    run_program("/system/bin/ip route delete table gprs");
+
+#Insert_Adhoc_on
+
+  log("Adhoc now running");
+);
+
+#
+# Actions when stopping adhoc
+#
+action() == "stop" && (
+  #
+  # Set "status"-Property
+  #
+  setprop("adhoc.status","stopped");
+
+    run_program("/data/data/org.servalproject/bin/ifconfig " +  getcfg("wifi.interface") + " down");
+    kill_process("iwconfig");
+#Insert_Adhoc_off
+
+  log("Adhoc now stopped");
+  
+);
+

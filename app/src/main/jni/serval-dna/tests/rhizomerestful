@@ -1,0 +1,1158 @@
+#!/bin/bash
+
+# Tests for Serval DNA Rhizome REST API
+#
+# Copyright 2013-2015 Serval Project, Inc.
+# Copyright 2016-2018 Flinders University
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+source "${0%/*}/../testframework.sh"
+source "${0%/*}/../testdefs.sh"
+source "${0%/*}/../testdefs_rest.sh"
+source "${0%/*}/../testdefs_rhizome.sh"
+
+shopt -s extglob
+
+setup() {
+   setup_rest_utilities
+   setup_servald
+   set_instance +A
+   setup_rest_config
+   set_rhizome_config
+   set_extra_config
+   if [ -z "$IDENTITY_COUNT" ]; then
+      create_single_identity
+   else
+      create_identities "$IDENTITY_COUNT"
+   fi
+   export SERVALD_RHIZOME_DB_RETRY_LIMIT_MS=60000
+   start_servald_instances +A
+   wait_until_rest_server_ready
+}
+
+finally() {
+   stop_all_servald_servers
+}
+
+teardown() {
+   kill_all_servald_processes
+   assert_no_servald_processes
+   report_all_servald_servers
+}
+
+set_extra_config() {
+   :
+}
+
+set_rhizome_config() {
+   executeOk_servald config \
+      set debug.rhizome_manifest on \
+      set debug.rhizome_store on \
+      set debug.rhizome on \
+      set debug.verbose on \
+      set log.console.level debug
+}
+
+doc_AuthBasicMissing="REST API missing Basic Authentication credentials"
+test_AuthBasicMissing() {
+   rest_request GET "/restful/rhizome/bundlelist.json" 401 --no-auth
+   assertGrep response.headers "^WWW-Authenticate: Basic realm=\"Serval RESTful API\"$CR\$"
+   assertJq response.json 'contains({"http_status_code": 401})'
+   assertJq response.json 'contains({"http_status_message": ""})'
+}
+
+doc_AuthBasicWrong="REST API incorrect Basic Authentication credentials"
+test_AuthBasicWrong() {
+   rest_request GET "/restful/rhizome/bundlelist.json" 401 --user=fred:nurks
+   assertGrep response.headers "^WWW-Authenticate: Basic realm=\"Serval RESTful API\"$CR\$"
+   assertJq response.json 'contains({"http_status_code": 401})'
+   assertJq response.json 'contains({"http_status_message": ""})'
+   rest_request GET "/restful/rhizome/bundlelist.json" 200 --user=ron:weasley
+}
+
+doc_CORS_Request="REST API allow local cross site requests, and deny remote ones"
+test_CORS_Request(){
+   rest_request OPTIONS "/restful/rhizome/bundlelist.json" 200 --no-auth --add-header="Origin: http://localhost"
+   assertGrep response.headers "^Access-Control-Allow-Origin: http://localhost$CR\$"
+   assertGrep response.headers "^Access-Control-Allow-Methods: GET, POST, OPTIONS$CR\$"
+   assertGrep response.headers "^Access-Control-Allow-Headers: Authorization$CR\$"
+   rest_request OPTIONS "/restful/rhizome/bundlelist.json" 200 --no-auth --add-header="Origin: http://localhost:1234"
+   assertGrep response.headers "^Access-Control-Allow-Origin: http://localhost:1234$CR\$"
+   rest_request OPTIONS "/restful/rhizome/bundlelist.json" 200 --no-auth --add-header="Origin: null"
+   assertGrep response.headers "^Access-Control-Allow-Origin: null$CR\$"
+   rest_request OPTIONS "/restful/rhizome/bundlelist.json" 403 --no-auth --add-header="Origin: http://malevolent.site.com"
+   rest_request GET "/restful/rhizome/bundlelist.json" 200 --add-header="Origin: http://localhost"
+   rest_request GET "/restful/rhizome/bundlelist.json" 403 --add-header="Origin: http://malevolent.site.com"
+}
+
+doc_RhizomeList="REST API list 100 Rhizome bundles as JSON"
+setup_RhizomeList() {
+   setup
+   NBUNDLES=100
+   rhizome_add_bundles "$SIDA" 0 $((NBUNDLES-1))
+   assert [ "$ROWID_MAX" -ge "$NBUNDLES" ]
+}
+test_RhizomeList() {
+   rest_request GET "/restful/rhizome/bundlelist.json"
+   assert [ "$(jq '.rows | length' response.json)" = $NBUNDLES ]
+   transform_list_json response.json array_of_objects.json
+   tfw_preserve array_of_objects.json
+   for ((n = 0; n != NBUNDLES; ++n)); do
+      if [ "${ROWID[$n]}" -eq "$ROWID_MAX" ]; then
+         # The first row must contain a non-null token string.
+         token=',".token":"","__index":0,'
+      else
+         token=',".token":null,'
+      fi
+      assertJq array_of_objects.json \
+               "contains([
+                  {  name:\"file$n\",
+                     service:\"file\",
+                     id:\"${BID[$n]}\",
+                     version:${VERSION[$n]},
+                     filesize:${SIZE[$n]},
+                     filehash:\"${HASH[$n]}\",
+                     date:${DATE[$n]},
+                     _id:${ROWID[$n]},
+                     \".fromhere\":1,
+                     \".author\":\"$SIDA\"
+                     $token
+                  }
+               ])"
+   done
+}
+
+doc_RhizomeListNewSince="REST API list Rhizome bundles since token as JSON"
+setup_RhizomeListNewSince() {
+   set_extra_config() {
+      executeOk_servald config set api.restful.newsince_timeout 10s
+   }
+   setup
+   # Use REST interface to add bundles, not CLI, in order to avoid a database
+   # locking storm
+   rhizome_use_restful harry potter
+   rhizome_add_bundles "$SIDA" 0 5
+   rest_request GET "/restful/rhizome/bundlelist.json"
+   assert [ "$(jq '.rows | length' response.json)" = 6 ]
+   transform_list_json response.json array_of_objects.json
+   token=$(jq --raw-output '.[0][".token"]' array_of_objects.json)
+   assert [ -n "$token" ]
+}
+test_RhizomeListNewSince() {
+   for i in 1 2 3; do
+      fork %client$i rest_request GET "/restful/rhizome/newsince/$token/bundlelist.json" \
+            --output=newsince$i.json \
+            --no-buffer
+   done
+   wait_until [ -e newsince1.json -a -e newsince2.json -a -e newsince3.json ]
+   rhizome_add_bundles "$SIDA" 6 10
+   for i in 1 2 3; do
+      wait_until grep "${BID[10]}" newsince$i.json
+   done
+   fork_wait_all
+   for i in 1 2 3; do
+      if [ $(jq . newsince$i.json | wc -c) -eq 0 ]; then
+         echo ']}' >>newsince$i.json
+         assert [ $(jq . newsince$i.json | wc -c) -ne 0 ]
+      fi
+      transform_list_json newsince$i.json objects$i.json
+      tfw_preserve objects$i.json
+      for ((n = 0; n <= 5; ++n)); do
+         assertJq objects$i.json "contains([{id:\"${BID[$n]}\"}]) | not"
+      done
+      for ((n = 6; n <= 10; ++n)); do
+         assertJq objects$i.json \
+                  "contains([
+                     {  name:\"file$n\",
+                        service:\"file\",
+                        id:\"${BID[$n]}\",
+                        version:${VERSION[$n]},
+                        filesize:${SIZE[$n]},
+                        filehash:\"${HASH[$n]}\",
+                        date:${DATE[$n]},
+                        _id:${ROWID[$n]},
+                        \".fromhere\":1,
+                        \".author\":\"$SIDA\",
+                        \".token\":\"\"
+                     }
+                  ])"
+      done
+   done
+}
+
+assert_http_response_headers() {
+   local file="$1"
+   assertGrep --matches=1 "$file" "^Serval-Rhizome-Bundle-Id: ${BID[$n]}$CR\$"
+   assertGrep --matches=1 "$file" "^Serval-Rhizome-Bundle-Version: ${VERSION[$n]}$CR\$"
+   assertGrep --matches=1 "$file" "^Serval-Rhizome-Bundle-Filesize: ${SIZE[$n]}$CR\$"
+   assertGrep --matches=1 "$file" "^Serval-Rhizome-Bundle-Filehash: ${HASH[$n]}$CR\$"
+   assertGrep --matches=1 "$file" "^Serval-Rhizome-Bundle-BK: ${BK[$n]}$CR\$"
+   assertGrep --matches=1 "$file" "^Serval-Rhizome-Bundle-Date: ${DATE[$n]}$CR\$"
+   assertGrep --matches=1 "$file" "^Serval-Rhizome-Bundle-Name: \"${NAME[$n]}\"$CR\$"
+   assertGrep --matches=1 "$file" "^Serval-Rhizome-Bundle-Service: file$CR\$"
+   assertGrep --matches=1 "$file" "^Serval-Rhizome-Bundle-Author: ${AUTHOR[$n]}$CR\$"
+   assertGrep --matches=1 "$file" "^Serval-Rhizome-Bundle-Secret: ${SECRET[$n]}$CR\$"
+   assertGrep --matches=1 "$file" "^Serval-Rhizome-Bundle-Inserttime: ${INSERTTIME[$n]}$CR\$"
+   assertGrep --matches=1 "$file" "^Serval-Rhizome-Bundle-Rowid: ${ROWID[$n]}$CR\$"
+}
+
+doc_RhizomeManifest="REST API fetch Rhizome manifest"
+setup_RhizomeManifest() {
+   setup
+   rhizome_add_bundles "$SIDA" 0 2
+}
+test_RhizomeManifest() {
+   for n in 0 1 2; do
+      rest_request GET "/restful/rhizome/${BID[$n]}.rhm" \
+         --output=bundle$n.rhm --dump-header=response$n.headers
+      tfw_cat bundle$n.rhm
+   done
+   for n in 0 1 2; do
+      assert diff file$n.manifest bundle$n.rhm
+      assert_http_response_headers response$n.headers
+   done
+}
+
+doc_RhizomeManifestNonexist="REST API fetch non-existent Rhizome manifest"
+test_RhizomeManifestNonexist() {
+   rest_request GET "/restful/rhizome/$BID_NONEXISTENT.rhm" 404
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+   assertGrep --matches=0 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code:"
+   assertGrep --matches=0 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message:"
+   assertJq response.json 'contains({"http_status_code": 404})'
+   assertJq response.json 'contains({"http_status_message": "Bundle not found"})'
+   assertJq response.json 'contains({"rhizome_bundle_status_code": 0})'
+   assertJqGrep --ignore-case response.json '.rhizome_bundle_status_message' "bundle new to store"
+}
+
+doc_RhizomePayloadRaw="REST API fetch Rhizome raw payload"
+setup_RhizomePayloadRaw() {
+   setup
+   rhizome_add_bundles "$SIDA" 0 1
+   rhizome_add_bundles --encrypted "$SIDA" 2 3
+}
+test_RhizomePayloadRaw() {
+   for n in 0 1 2 3; do
+      rest_request GET "/restful/rhizome/${BID[$n]}/raw.bin" \
+            --output=raw$n.bin \
+            --dump-header=response$n.headers
+   done
+   for n in 0 1 2 3; do
+      assert cmp raw$n raw$n.bin
+      assertGrep --matches=1 --ignore-case response$n.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 1$CR\$"
+      assertGrep --matches=1 --ignore-case response$n.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle already in store.*$CR\$"
+      assertGrep --matches=1 --ignore-case response$n.headers "^Serval-Rhizome-Result-Payload-Status-Code: 2$CR\$"
+      assertGrep --matches=1 --ignore-case response$n.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload already in store.*$CR\$"
+      assert_http_response_headers response$n.headers
+   done
+}
+
+doc_RhizomePayloadRawNonexistManifest="REST API fetch Rhizome raw payload for non-existent manifest"
+test_RhizomePayloadRawNonexistManifest() {
+   rest_request GET "/restful/rhizome/$BID_NONEXISTENT/raw.bin" 404
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+   assertGrep --matches=0 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code:"
+   assertGrep --matches=0 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message:"
+   assertJq response.json 'contains({"http_status_code": 404})'
+   assertJq response.json 'contains({"http_status_message": "Bundle not found"})'
+   assertJq response.json 'contains({"rhizome_bundle_status_code": 0})'
+   assertJqGrep --ignore-case response.json '.rhizome_bundle_status_message' "bundle new to store"
+}
+
+doc_RhizomePayloadRawNonexistPayload="REST API fetch non-existent Rhizome raw payload"
+setup_RhizomePayloadRawNonexistPayload() {
+   set_extra_config() {
+      executeOk_servald config set rhizome.max_blob_size 0
+   }
+   setup
+   rhizome_add_bundles "$SIDA" 0 0
+   rhizome_delete_payload_blobs "${HASH[0]}"
+}
+test_RhizomePayloadRawNonexistPayload() {
+   rest_request GET "/restful/rhizome/${BID[0]}/raw.bin" 404
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 1$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle already in store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code: 1$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload new to store.*$CR\$"
+   assertJq response.json 'contains({"http_status_code": 404})'
+   assertJq response.json 'contains({"http_status_message": "Payload not found"})'
+   assertJq response.json 'contains({"rhizome_bundle_status_code": 1})'
+   assertJqGrep --ignore-case response.json '.rhizome_bundle_status_message' "bundle already in store"
+   assertJq response.json 'contains({"rhizome_payload_status_code": 1})'
+   assertJqGrep --ignore-case response.json '.rhizome_payload_status_message' "payload new to store"
+}
+
+doc_RhizomePayloadDecrypted="REST API fetch Rhizome decrypted payload"
+setup_RhizomePayloadDecrypted() {
+   setup
+   rhizome_add_bundles "$SIDA" 0 1
+   rhizome_add_bundles --encrypted "$SIDA" 2 3
+}
+test_RhizomePayloadDecrypted() {
+   for n in 0 1 2 3; do
+      rest_request GET "/restful/rhizome/${BID[$n]}/decrypted.bin" \
+            --output=decrypted$n.bin \
+            --dump-header=response$n.headers
+   done
+   for n in 0 1 2 3; do
+      assert cmp file$n decrypted$n.bin
+      assertGrep --matches=1 --ignore-case response$n.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 1$CR\$"
+      assertGrep --matches=1 --ignore-case response$n.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle already in store.*$CR\$"
+      assertGrep --matches=1 --ignore-case response$n.headers "^Serval-Rhizome-Result-Payload-Status-Code: 2$CR\$"
+      assertGrep --matches=1 --ignore-case response$n.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload already in store.*$CR\$"
+      assert_http_response_headers response$n.headers
+   done
+}
+
+doc_RhizomePayloadDecryptedForeign="REST API cannot fetch foreign Rhizome decrypted payload"
+setup_RhizomePayloadDecryptedForeign() {
+   setup
+   rhizome_add_bundles --encrypted "$SIDA" 0 0
+   set_instance +B
+   create_single_identity
+   rhizome_add_bundles --encrypted "$SIDB" 1 1
+   executeOk_servald rhizome export manifest "${BID[1]}" file1.manifest
+   set_instance +A
+   executeOk_servald rhizome import bundle raw1 file1.manifest
+}
+test_RhizomePayloadDecryptedForeign() {
+   rest_request GET "/restful/rhizome/${BID[1]}/decrypted.bin" 419
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 1$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle already in store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code: 5$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*incorrect bundle secret.*$CR\$"
+}
+
+doc_RhizomePayloadDecryptedNonexistManifest="REST API fetch Rhizome decrypted payload for non-existent manifest"
+test_RhizomePayloadDecryptedNonexistManifest() {
+   rest_request GET "/restful/rhizome/$BID_NONEXISTENT/decrypted.bin" 404
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+   assertGrep --matches=0 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code:"
+   assertGrep --matches=0 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message:"
+   assertJq response.json 'contains({"http_status_code": 404})'
+   assertJq response.json 'contains({"http_status_message": "Bundle not found"})'
+   assertJq response.json 'contains({"rhizome_bundle_status_code": 0})'
+   assertJqGrep --ignore-case response.json '.rhizome_bundle_status_message' "bundle new to store"
+}
+
+doc_RhizomePayloadDecryptedNonexistPayload="REST API fetch non-existent Rhizome decrypted payload"
+setup_RhizomePayloadDecryptedNonexistPayload() {
+   set_extra_config() {
+      executeOk_servald config set rhizome.max_blob_size 0
+   }
+   setup
+   rhizome_add_bundles "$SIDA" 0 0
+   rhizome_delete_payload_blobs "${HASH[0]}"
+}
+test_RhizomePayloadDecryptedNonexistPayload() {
+   rest_request GET "/restful/rhizome/${BID[0]}/decrypted.bin" 404
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 1$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle already in store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code: 1$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload new to store.*$CR\$"
+   assertJq response.json 'contains({"http_status_code": 404})'
+   assertJq response.json 'contains({"http_status_message": "Payload not found"})'
+   assertJq response.json 'contains({"rhizome_bundle_status_code": 1})'
+   assertJqGrep --ignore-case response.json '.rhizome_bundle_status_message' "bundle already in store"
+   assertJq response.json 'contains({"rhizome_payload_status_code": 1})'
+   assertJqGrep --ignore-case response.json '.rhizome_payload_status_message' "payload new to store"
+}
+
+doc_RhizomeInsert="REST API insert new Rhizome bundles"
+setup_RhizomeInsert() {
+   IDENTITY_COUNT=3
+   SIDA4=
+   setup
+   for n in 1 2 3 4; do
+      create_file file$n $((1000 + $n))
+      create_file nfile$n $((1100 + $n))
+      payload_filename[$n]=
+      eval author[$n]=\$SIDA$n
+      service[$n]=file
+   done
+   name[1]=blarg
+   echo "name=blarg" >manifest1
+   name[2]=file2
+   echo "crypt=1" >manifest2
+   name[3]=kibble
+   payload_filename[3]=kibble
+   >manifest3
+   name[4]=
+   service[4]=wah
+   echo -e "service=wah\ncrypt=0" >manifest4
+}
+test_RhizomeInsert() {
+   for n in 1 2 3 4; do
+      authorargs=()
+      [ -n "${author[$n]}" ] && authorargs=(--form-part="bundle-author=${author[$n]};type=serval/sid;format=hex")
+      rest_request POST "/restful/rhizome/insert" 201 \
+            --output=file$n.manifest \
+            --dump-header=request$n.header \
+            "${authorargs[@]}" \
+            --form-part="manifest=@manifest$n;type=rhizome/manifest;format=text+binarysig" \
+            --form-part="payload=@file$n${payload_filename[$n]:+;filename=\"${payload_filename[$n]}\"}"
+      extract_http_header BID[$n] request$n.header Serval-Rhizome-Bundle-Id "$rexp_manifestid"
+      extract_http_header VERSION[$n] request$n.header Serval-Rhizome-Bundle-Version "$rexp_version"
+      extract_http_header SIZE[$n] request$n.header Serval-Rhizome-Bundle-Filesize "$rexp_filesize"
+      extract_http_header HASH[$n] request$n.header Serval-Rhizome-Bundle-Filehash "$rexp_filehash"
+      extract_http_header DATE[$n] request$n.header Serval-Rhizome-Bundle-Date "$rexp_date"
+      extract_http_header ROWID[$n] request$n.header Serval-Rhizome-Bundle-Rowid "$rexp_rowid"
+      extract_http_header INSERTTIME[$n] request$n.header Serval-Rhizome-Bundle-Inserttime "$rexp_date"
+      extract_http_header SECRET[$n] request$n.header Serval-Rhizome-Bundle-Secret "$rexp_bundlesecret"
+      extract_http_header SERVICE[$n] request$n.header Serval-Rhizome-Bundle-Service ".*"
+      assert [ ${SIZE[$n]} -eq $((1000 + $n)) ]
+      assert [ "${SERVICE[$n]}" = "${service[$n]}" ]
+      extract_manifest_id BID file$n.manifest
+      extract_manifest_version VERSION file$n.manifest
+      extract_manifest_filesize SIZE file$n.manifest
+      extract_manifest_filehash HASH file$n.manifest
+      extract_manifest_date DATE file$n.manifest
+      extract_manifest_service SERVICE file$n.manifest
+      assert [ "$BID" = "${BID[$n]}" ]
+      assert [ "$VERSION" = "${VERSION[$n]}" ]
+      assert [ "$SIZE" = "${SIZE[$n]}" ]
+      assert [ "$HASH" = "${HASH[$n]}" ]
+      assert [ "$DATE" = "${DATE[$n]}" ]
+      assert [ "$SERVICE" = "${SERVICE[$n]}" ]
+      if [ -n "${name[$n]}" ]; then
+         extract_http_header NAME[$n] request$n.header Serval-Rhizome-Bundle-Name ".*"
+         http_unquote_string NAME[$n]
+         assert [ "${NAME[$n]}" = "${name[$n]}" ]
+         extract_manifest_name NAME file$n.manifest
+         assert [ "$NAME" = "${NAME[$n]}" ]
+      fi
+      if [ -n "${author[$n]}" ]; then
+         extract_http_header AUTHOR[$n] request$n.header Serval-Rhizome-Bundle-Author "$rexp_sid"
+         assert [ "${AUTHOR[$n]}" = "${author[$n]}" ]
+         extract_http_header BK[$n] request$n.header Serval-Rhizome-Bundle-BK "$rexp_bundlekey"
+         extract_manifest_BK BK file$n.manifest
+         assert [ "$BK" = "${BK[$n]}" ]
+      fi
+   done
+   executeOk_servald rhizome list
+   assert_rhizome_list \
+      --fromhere=1 \
+         --author=${author[1]} file1 \
+         --author=${author[2]} file2 \
+         --author=${author[3]} file3 \
+      --fromhere=0 \
+         --author=${author[4]} file4
+   for n in 1 2 3 4; do
+      executeOk_servald rhizome extract bundle ${BID[$n]} xfile$n.manifest xfile$n
+      assert diff xfile$n.manifest file$n.manifest
+      assert diff file$n xfile$n
+   done
+   for n in 1 2 3 4; do
+      $SED -e '/^version=/d;/^date=/d;/^filehash=/d;/^filesize=/d' xfile$n.manifest >nmanifest$n
+      if [ -n "${author[$n]}" ]; then
+         expect_response_code=201
+      else
+         expect_response_code=419
+      fi
+      rest_request POST "/restful/rhizome/insert" $expect_response_code \
+            --output=nfile$n.manifest \
+            --dump-header=response$n.headers \
+            --form-part="manifest=@nmanifest$n;type=rhizome/manifest;format=text+binarysig" \
+            --form-part="payload=@nfile$n;filename=\"nfile$n\""
+      if [ -n "${author[$n]}" ]; then
+         assertGrep --matches=1 --ignore-case response$n.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+         assertGrep --matches=1 --ignore-case response$n.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+         assertGrep --matches=1 --ignore-case response$n.headers "^Serval-Rhizome-Result-Payload-Status-Code: 1$CR\$"
+         assertGrep --matches=1 --ignore-case response$n.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload new to store.*$CR\$"
+      else
+         assertJq nfile$n.manifest 'contains({"http_status_code": 419})'
+         assertJqGrep --ignore-case nfile$n.manifest '.http_status_message' "missing bundle secret"
+      fi
+   done
+}
+
+doc_RhizomeInsertBoundaries="REST API insert of various payload lengths"
+test_RhizomeInsertBoundaries() {
+   for n in {1..10}
+   do
+      create_file file$n $((7200 + ($n * 50)))
+      >manifest$n
+      rest_request POST "/restful/rhizome/insert" 201 \
+            --output=file$n.manifest \
+            --dump-header=request$n.headers \
+            --form-part="manifest=@manifest$n;type=rhizome/manifest;format=text+binarysig" \
+            --form-part="payload=@file$n"
+   done
+}
+
+doc_RhizomeInsertAnon="REST API update anonymous Rhizome bundle"
+setup_RhizomeInsertAnon() {
+   setup
+   create_file file1 1001
+   executeOk_servald rhizome add file '' file1 file1.manifest
+   extract_stdout_secret SECRET
+   assert_manifest_fields file1.manifest !BK
+   $SED -e '/^version=/d;/^date=/d;/^filehash=/d;/^filesize=/d' file1.manifest >file2.manifest
+   assert_manifest_fields file2.manifest !version !date !filehash !filesize
+   create_file file2 1002
+}
+test_RhizomeInsertAnon() {
+   rest_request POST "/restful/rhizome/insert" 201 \
+         --output=ifile2.manifest \
+         --form-part="bundle-secret=$SECRET;type=rhizome/bundlesecret;format=hex" \
+         --form-part="manifest=@file2.manifest;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file2"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code: 1$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload new to store.*$CR\$"
+   executeOk_servald rhizome list
+   assert_rhizome_list --fromhere=0 --manifest=ifile2.manifest file2
+}
+
+doc_RhizomeInsertAnonPassphrase="REST API insert and update anonymous Rhizome bundle with passphrase secret"
+setup_RhizomeInsertAnonPassphrase() {
+   setup
+   create_file file1 1001
+   create_file file2 1002
+   pass="This Too Shall Pass"
+}
+test_RhizomeInsertAnonPassphrase() {
+   # Create the bundle with file1
+   rest_request POST "/restful/rhizome/insert" 201 \
+         --output=ifile1.manifest \
+         --form-part="bundle-secret=#$pass;type=rhizome/bundlesecret;format=hex" \
+         --form-part="manifest=;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file1"
+   assert_manifest_complete ifile1.manifest
+   assert_manifest_fields ifile1.manifest !BK
+   extract_manifest_id BID ifile1.manifest
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code: 1$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload new to store.*$CR\$"
+   assertGrep --matches=0 --ignore-case response.headers "^Serval-Rhizome-Bundle-BK:"
+   extract_http_header SECRET response.headers Serval-Rhizome-Bundle-Secret "$rexp_bundlesecret"
+   executeOk_servald rhizome list
+   assert_rhizome_list --fromhere=0 --manifest=ifile1.manifest file1
+   # Update the bundle to file2
+   rest_request POST "/restful/rhizome/insert" 201 \
+         --output=ifile2.manifest \
+         --form-part="bundle-secret=#$pass;type=rhizome/bundlesecret;format=hex" \
+         --form-part="manifest=;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file2"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code: 1$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload new to store.*$CR\$"
+   assertGrep --matches=0 --ignore-case response.headers "^Serval-Rhizome-Bundle-BK:"
+   assert_manifest_complete ifile2.manifest
+   assert_manifest_fields ifile2.manifest !BK
+   extract_manifest_id BID2 ifile2.manifest
+   assert [ "$BID" = "$BID2" ]
+   executeOk_servald rhizome list
+   assert_rhizome_list --fromhere=0 --manifest=ifile2.manifest file2
+}
+
+doc_RhizomeInsertPassphrase="REST API insert and update Rhizome bundle with passphrase secret"
+setup_RhizomeInsertPassphrase() {
+   setup
+   create_file file1 1001
+   create_file file2 1002
+   pass="This Too Shall Pass"
+}
+test_RhizomeInsertPassphrase() {
+   # Create the bundle with file1
+   rest_request POST "/restful/rhizome/insert" 201 \
+         --output=ifile1.manifest \
+         --form-part="bundle-author=$SIDA;type=serval/sid;format=hex" \
+         --form-part="bundle-secret=#$pass;type=rhizome/bundlesecret;format=hex" \
+         --form-part="manifest=;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file1"
+   assert_manifest_complete ifile1.manifest
+   extract_manifest_id BID ifile1.manifest
+   extract_manifest_BK BK ifile1.manifest
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code: 1$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload new to store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Bundle-BK: $BK$CR\$"
+   extract_http_header SECRET response.headers Serval-Rhizome-Bundle-Secret "$rexp_bundlesecret"
+   executeOk_servald rhizome list
+   assert_rhizome_list --fromhere=1 --manifest=ifile1.manifest file1
+   # Update the bundle to file2
+   rest_request POST "/restful/rhizome/insert" 201 \
+         --output=ifile2.manifest \
+         --form-part="bundle-author=$SIDA;type=serval/sid;format=hex" \
+         --form-part="bundle-secret=#$pass;type=rhizome/bundlesecret;format=hex" \
+         --form-part="manifest=;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file2"
+   assert_manifest_complete ifile2.manifest
+   extract_manifest_id BID2 ifile2.manifest
+   extract_manifest_BK BK2 ifile2.manifest
+   assert [ "$BID" = "$BID2" ]
+   assert [ "$BK" = "$BK2" ]
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code: 1$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload new to store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Bundle-BK: $BK$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Bundle-Secret: $SECRET$CR\$"
+   executeOk_servald rhizome list
+   assert_rhizome_list --fromhere=1 --manifest=ifile2.manifest file2
+}
+
+doc_RhizomeInsertEmpty="REST API insert empty Rhizome bundle"
+setup_RhizomeInsertEmpty() {
+   setup
+   >empty
+   assert [ ! -s empty ]
+}
+test_RhizomeInsertEmpty() {
+   rest_request POST "/restful/rhizome/insert" 201 \
+         --output=empty.manifest \
+         --form-part="manifest=;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@empty;filename=\"lucky\""
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload empty.*$CR\$"
+   extract_manifest_id BID empty.manifest
+   executeOk_servald rhizome list
+   assert_rhizome_list empty
+   executeOk_servald rhizome extract bundle "$BID" xempty.manifest xempty
+   assert [ ! -e xempty ]
+   assert diff xempty.manifest empty.manifest
+}
+
+doc_RhizomeUpdateToEmpty="REST API update Rhizome bundle to empty"
+setup_RhizomeUpdateToEmpty() {
+   setup
+   >empty
+   assert [ ! -s empty ]
+   create_file nonempty 101
+   executeOk_servald rhizome add file "$SIDA" nonempty nonempty.manifest
+   executeOk_servald rhizome list
+   assert_rhizome_list nonempty
+   extract_manifest_id BID nonempty.manifest
+}
+test_RhizomeUpdateToEmpty() {
+   rest_request POST "/restful/rhizome/insert" 201 \
+         --output=empty.manifest \
+         --form-part="bundle-id=$BID;type=rhizome/bid;format=hex" \
+         --form-part="manifest=;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@empty;filename=\"lethargic\""
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload empty.*$CR\$"
+   executeOk_servald rhizome list
+   assert_rhizome_list empty
+   executeOk_servald rhizome extract bundle "$BID" xempty.manifest xempty
+   assert [ ! -e xempty ]
+   assert diff xempty.manifest empty.manifest
+}
+
+doc_RhizomeInsertLarge="REST API insert 50 MiB Rhizome bundle"
+setup_RhizomeInsertLarge() {
+   setup
+   create_file file1 50m
+}
+test_RhizomeInsertLarge() {
+   rest_request POST "/restful/rhizome/insert" 201 \
+         --timeout=120 \
+         --output=file1.manifest \
+         --form-part="manifest=;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file1"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code: 1$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload new to store.*$CR\$"
+   extract_manifest_id BID file1.manifest
+   executeOk_servald rhizome list
+   assert_rhizome_list file1
+   executeOk_servald rhizome extract bundle "$BID" xfile1.manifest xfile1
+   assert diff xfile1.manifest file1.manifest
+   assert cmp file1 xfile1
+}
+
+doc_RhizomeInsertMissingManifest="REST API insert Rhizome bundle, missing 'manifest' form part"
+setup_RhizomeInsertMissingManifest() {
+   setup
+   echo 'File one' >file1
+}
+test_RhizomeInsertMissingManifest() {
+   rest_request POST "/restful/rhizome/insert" 400 --form-part="payload=@file1"
+   assertJq response.json 'contains({"http_status_code": 400})'
+   assertJqGrep --ignore-case response.json '.http_status_message' 'missing.*manifest.*form.*part'
+   executeOk_servald rhizome list
+   assert_rhizome_list
+}
+
+doc_RhizomeInsertManifestOverflow="REST API insert Rhizome bundle, 'manifest' form part overflow"
+setup_RhizomeInsertManifestOverflow() {
+   setup
+   echo 'File one' >file1
+   { echo -n 'foo='; create_file --omit="$LF" - 8185; echo; } >file1.manifest
+}
+test_RhizomeInsertManifestOverflow() {
+   rest_request POST "/restful/rhizome/insert" 422 \
+         --form-part="manifest=@file1.manifest;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file1"
+   assertJq response.json 'contains({"http_status_code": 422})'
+   assertJqGrep --ignore-case response.json '.http_status_message' 'manifest.*too.*big'
+   executeOk_servald rhizome list
+   assert_rhizome_list
+}
+
+doc_RhizomeInsertIncorrectManifestType="REST API insert Rhizome bundle, incorrect 'manifest' content type"
+setup_RhizomeInsertIncorrectManifestType() {
+   setup
+   echo 'File one' >file1
+}
+test_RhizomeInsertIncorrectManifestType() {
+   rest_request POST "/restful/rhizome/insert" 415 \
+         --form-part="manifest=;type=rhizome-manifest/text" \
+         --form-part="payload=@file1"
+   assertJq response.json 'contains({"http_status_code": 415})'
+   assertJqGrep --ignore-case response.json '.http_status_message' 'unsupported content-type.*manifest.*form.*part'
+   executeOk_servald rhizome list
+   assert_rhizome_list
+}
+
+doc_RhizomeInsertIncorrectManifestFormat="REST API insert Rhizome bundle, incorrect 'manifest' content format"
+setup_RhizomeInsertIncorrectManifestFormat() {
+   setup
+   echo 'File one' >file1
+}
+test_RhizomeInsertIncorrectManifestFormat() {
+   rest_request POST "/restful/rhizome/insert" 415 \
+         --form-part="manifest=;type=rhizome/manifest;format=\"text\"" \
+         --form-part="payload=@file1"
+   assertJq response.json 'contains({"http_status_code": 415})'
+   assertJqGrep --ignore-case response.json '.http_status_message' 'unsupported content-type.*manifest.*form.*part'
+   executeOk_servald rhizome list
+   assert_rhizome_list
+}
+
+doc_RhizomeInsertDuplicateManifest="REST API insert Rhizome bundle, duplicate 'manifest' form part"
+setup_RhizomeInsertDuplicateManifest() {
+   setup
+   echo 'File one' >file1
+   echo 'name=wah' >file1.manifest
+   echo 'name=bee' >file2.manifest
+}
+test_RhizomeInsertDuplicateManifest() {
+   rest_request POST "/restful/rhizome/insert" 400 \
+         --form-part="manifest=@file1.manifest;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="manifest=@file2.manifest;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file1"
+   assertJq response.json 'contains({"http_status_code": 400})'
+   assertJqGrep --ignore-case response.json '.http_status_message' 'duplicate.*manifest.*form.*part'
+   executeOk_servald rhizome list
+   assert_rhizome_list
+}
+
+doc_RhizomeInsertJournalForbidden="REST API insert Rhizome bundle does not accept journals"
+setup_RhizomeInsertJournalForbidden() {
+   setup
+   echo 'File one' >file1
+   echo 'tail=0' >file1.manifest
+}
+test_RhizomeInsertJournalForbidden() {
+   rest_request POST "/restful/rhizome/insert" 422 \
+         --form-part="manifest=@file1.manifest;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file1"
+   assertJq response.json 'contains({"http_status_code": 422})'
+   assertJq response.json 'contains({"http_status_message": "Cannot add a journal bundle (use append instead)"})'
+   assertJqGrep --ignore-case response.json '.http_status_message' 'cannot add.*journal'
+   executeOk_servald rhizome list
+   assert_rhizome_list
+}
+
+doc_RhizomeInsertMissingPayload="REST API insert Rhizome bundle, missing 'payload' form part"
+setup_RhizomeInsertMissingPayload() {
+   setup
+   echo 'File one' >file1
+   echo 'name=wah' >file1.manifest
+}
+test_RhizomeInsertMissingPayload() {
+   rest_request POST "/restful/rhizome/insert" 400 \
+         --form-part="manifest=@file1.manifest;type=rhizome/manifest;format=text+binarysig"
+   assertJq response.json 'contains({"http_status_code": 400})'
+   assertJqGrep --ignore-case response.json '.http_status_message' 'missing.*payload.*form.*part'
+   executeOk_servald rhizome list
+   assert_rhizome_list
+}
+
+doc_RhizomeInsertDuplicatePayload="REST API insert Rhizome bundle, duplicate 'payload' form part"
+setup_RhizomeInsertDuplicatePayload() {
+   setup
+   echo 'File one' >file1
+   echo 'File two' >file2
+   echo 'name=wah' >file1.manifest
+}
+test_RhizomeInsertDuplicatePayload() {
+   rest_request POST "/restful/rhizome/insert" 400 \
+         --form-part="manifest=@file1.manifest;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file1" \
+         --form-part="payload=@file2"
+   assertJq response.json 'contains({"http_status_code": 400})'
+   assertJqGrep --ignore-case response.json '.http_status_message' 'duplicate.*payload.*form.*part'
+   executeOk_servald rhizome list
+   assert_rhizome_list
+}
+
+doc_RhizomeInsertPartOrder="REST API insert Rhizome bundle, 'payload' form part before 'manifest'"
+setup_RhizomeInsertPartOrder() {
+   setup
+   echo 'File one' >file1
+   echo 'name=wah' >file1.manifest
+}
+test_RhizomeInsertPartOrder() {
+   rest_request POST "/restful/rhizome/insert" 400 \
+         --form-part="payload=@file1" \
+         --form-part="manifest=@file1.manifest;type=rhizome/manifest;format=text+binarysig"
+   assertJq response.json 'contains({"http_status_code": 400})'
+   assertJqGrep --ignore-case response.json '.http_status_message' 'missing.*manifest.*form.*part'
+   executeOk_servald rhizome list
+   assert_rhizome_list
+}
+
+doc_RhizomeInsertPartUnsupported="REST API insert Rhizome bundle, unsupported form part"
+setup_RhizomeInsertPartUnsupported() {
+   setup
+   echo 'File one' >file1
+   echo 'name=wah' >file1.manifest
+}
+test_RhizomeInsertPartUnsupported() {
+   rest_request POST "/restful/rhizome/insert" 400 \
+         --form-part="manifest=@file1.manifest;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file1" \
+         --form-part="happyhappy=joyjoy"
+   assertJq response.json 'contains({"http_status_code": 400})'
+   assertJqGrep --ignore-case response.json '.http_status_message' 'unsupported.*form.*part'
+   assertJqGrep response.json '.http_status_message' 'happyhappy'
+   executeOk_servald rhizome list
+   assert_rhizome_list
+}
+
+doc_RhizomeInsertIncorrectFilesize="REST API insert Rhizome bundle, incorrect filesize"
+setup_RhizomeInsertIncorrectFilesize() {
+   setup
+   echo 'File one' >file1
+   echo 'filesize=6' >file1.manifest
+   echo 'File two' >file2
+   echo 'filesize=100' >file2.manifest
+}
+test_RhizomeInsertIncorrectFilesize() {
+   rest_request POST "/restful/rhizome/insert" 422 \
+         --form-part="manifest=@file1.manifest;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file1"
+   assertJq response.json 'contains({"http_status_code": 422})'
+   assertJq response.json 'contains({"http_status_message": "Inconsistent filesize"})'
+   assertJq response.json 'contains({"rhizome_payload_status_code": 3})'
+   assertJqGrep --ignore-case response.json '.rhizome_payload_status_message' 'payload size.*contradicts manifest'
+   rest_request POST "/restful/rhizome/insert" 422 \
+         --form-part="manifest=@file2.manifest;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file2"
+   assertJq response.json 'contains({"http_status_code": 422})'
+   assertJq response.json 'contains({"http_status_message": "Inconsistent filesize"})'
+   assertJq response.json 'contains({"rhizome_payload_status_code": 3})'
+   assertJqGrep --ignore-case response.json '.rhizome_payload_status_message' 'payload size.*contradicts manifest'
+   executeOk_servald rhizome list
+   assert_rhizome_list
+}
+
+doc_RhizomeInsertIncorrectFilehash="REST API insert Rhizome bundle, incorrect filehash"
+setup_RhizomeInsertIncorrectFilehash() {
+   setup
+   echo 'File one' >file1
+   echo 'filehash=FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF' >file1.manifest
+}
+test_RhizomeInsertIncorrectFilehash() {
+   rest_request POST "/restful/rhizome/insert" 422 \
+         --form-part="manifest=@file1.manifest;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file1"
+   assertJq response.json 'contains({"http_status_code": 422})'
+   assertJq response.json 'contains({"http_status_message": "Inconsistent filehash"})'
+   assertJq response.json 'contains({"rhizome_payload_status_code": 4})'
+   assertJqGrep --ignore-case response.json '.rhizome_payload_status_message' 'payload hash.*contradicts manifest'
+   executeOk_servald rhizome list
+   assert_rhizome_list
+}
+
+doc_RhizomeImport="REST API Rhizome import"
+setup_RhizomeImport() {
+   setup
+   set_instance +B
+   create_single_identity
+   create_file file1 100
+   executeOk_servald rhizome add file "$SIDB" file1 file1.manifest
+   extract_manifest_id manifestid file1.manifest
+   extract_manifest_version version file1.manifest
+   extract_manifest_filehash filehash file1.manifest
+   executeOk_servald rhizome export manifest "$manifestid" file1.manifest
+   set_instance +A
+}
+test_RhizomeImport() {
+   # The first import with no 'id' and 'version' params adds the bundle to the
+   # store.
+   rest_request POST "/restful/rhizome/import?id=${manifestid}&version=${version}" 201 \
+            --add-header='Expect: 100-continue' \
+            --add-header='Transfer-Encoding: chunked' \
+            --form-part="manifest=@file1.manifest;type=rhizome/manifest;format=text+binarysig" \
+            --form-part="payload=@file1"
+   assertGrep response.headers '100 Continue'
+   assertGrep response.headers "^Serval-Rhizome-Bundle-Id: $manifestid$CR\$"
+   assertGrep response.headers "^Serval-Rhizome-Bundle-Version: $version$CR\$"
+   assertGrep response.headers "^Serval-Rhizome-Bundle-Filesize: 100$CR\$"
+   assertGrep response.headers "^Serval-Rhizome-Bundle-Filehash: $filehash$CR\$"
+   assertJq response.json 'contains({"http_status_code": 201})'
+   assertJq response.json 'contains({"http_status_message": "Created"})'
+   # Repeating the first import with no 'id' and 'version' params detects that
+   # the bundle is already in the store.
+   rest_request POST "/restful/rhizome/import" 200 \
+            --add-header='Expect: 100-continue' \
+            --add-header='Transfer-Encoding: chunked' \
+            --form-part="manifest=@file1.manifest;type=rhizome/manifest;format=text+binarysig" \
+            --form-part="payload=@file1"
+   assertGrep response.headers '100 Continue'
+   assertGrep response.headers "^Serval-Rhizome-Bundle-Id: $manifestid$CR\$"
+   assertGrep response.headers "^Serval-Rhizome-Bundle-Version: $version$CR\$"
+   assertGrep response.headers "^Serval-Rhizome-Bundle-Filesize: 100$CR\$"
+   assertGrep response.headers "^Serval-Rhizome-Bundle-Filehash: $filehash$CR\$"
+   assertJq response.json 'contains({"http_status_code": 200})'
+   assertJq response.json 'contains({"http_status_message": "Bundle already in store"})'
+   # Repeating the first import with 'id' and 'version' query params, we get an
+   # early hit so the 'manifest' and 'payload' form parts can be omitted (and a
+   # dummy form part supplied to cause curl(1) to construct a POST request
+   # instead of GET) without error, because the server never tries to read the
+   # request body.
+   rest_request POST "/restful/rhizome/import?id=${manifestid}&version=${version}" 200 \
+            --add-header='Expect: 100-continue' \
+            --add-header='Transfer-Encoding: chunked' \
+            --form-part='dummy=never-parsed'
+   assertGrep --matches=0 response.headers '100 Continue'
+   assertGrep response.headers "^Serval-Rhizome-Bundle-Id: $manifestid$CR\$"
+   assertGrep response.headers "^Serval-Rhizome-Bundle-Version: $version$CR\$"
+   assertGrep response.headers "^Serval-Rhizome-Bundle-Filesize: 100$CR\$"
+   assertGrep --matches=0 response.headers "^Serval-Rhizome-Bundle-Filehash:"
+   assertJq response.json 'contains({"http_status_code": 200})'
+   assertJq response.json 'contains({"http_status_message": "Bundle already in store"})'
+}
+
+doc_RhizomeImportLarge="REST API Rhizome import 50 MiB"
+setup_RhizomeImportLarge() {
+   setup
+   set_instance +B
+   create_single_identity
+   create_file file1 50m
+   executeOk_servald rhizome add file "$SIDB" file1 file1.manifest
+   extract_manifest_id manifestid file1.manifest
+   extract_manifest_version version file1.manifest
+   executeOk_servald rhizome export manifest "$manifestid" file1.manifest
+   set_instance +A
+}
+test_RhizomeImportLarge() {
+   rest_request POST "/restful/rhizome/import?id=${manifestid}&version=${version}" 201 \
+            --add-header='Expect: 100-continue' \
+            --add-header='Transfer-Encoding: chunked' \
+            --form-part="manifest=@file1.manifest;type=rhizome/manifest;format=text+binarysig" \
+            --form-part="payload=@file1"
+   assertGrep response.headers '100 Continue'
+   assertJq response.json 'contains({"http_status_code": 201})'
+   assertJq response.json 'contains({"http_status_message": "Created"})'
+}
+
+doc_RhizomeImportParamsBad="REST API Rhizome import parameters must match manifest"
+setup_RhizomeImportParamsBad() {
+   setup
+   set_instance +B
+   create_single_identity
+   create_file file1 100
+   executeOk_servald rhizome add file "$SIDB" file1 file1.manifest
+   extract_manifest_id manifestid file1.manifest
+   extract_manifest_version version file1.manifest
+   executeOk_servald rhizome export manifest "$manifestid" file1.manifest
+   set_instance +A
+}
+test_RhizomeImportParamsBad() {
+   # The 'id' query parameter must match the manifest's ID.
+   rest_request POST "/restful/rhizome/import?id=${BID_NONEXISTENT}&version=${version}" 422 \
+            --add-header='Expect: 100-continue' \
+            --add-header='Transfer-Encoding: chunked' \
+            --form-part="manifest=@file1.manifest;type=rhizome/manifest;format=text+binarysig" \
+            --form-part="payload=@file1"
+   assertGrep response.headers '100 Continue'
+   assertJq response.json 'contains({"http_status_code": 422})'
+   assertJq response.json 'contains({"http_status_message": "query"})'
+   # The 'version' query parameter must match the manifest's version.
+   wrongversion=$((version + 1))
+   rest_request POST "/restful/rhizome/import?id=${manifestid}&version=${wrongversion}" 422 \
+            --add-header='Expect: 100-continue' \
+            --add-header='Transfer-Encoding: chunked' \
+            --form-part="manifest=@file1.manifest;type=rhizome/manifest;format=text+binarysig" \
+            --form-part="payload=@file1"
+   assertGrep response.headers '100 Continue'
+   assertJq response.json 'contains({"http_status_code": 422})'
+   assertJq response.json 'contains({"http_status_message": "query"})'
+}
+
+doc_RhizomeJournalAppend="REST API Rhizome journal create and append"
+setup_RhizomeJournalAppend() {
+   setup
+   echo 'File one' >file1
+   file1_size=$(cat file1 | wc -c)
+   >manifest1
+   echo "service=anything" >>manifest1
+   echo "name=hoopla" >>manifest1
+   echo "random=rubbish" >>manifest1
+   echo 'File two two two' >file2
+   >manifest2
+   file2_size=$(cat file2 | wc -c)
+}
+test_RhizomeJournalAppend() {
+   rest_request POST "/restful/rhizome/append" 201 \
+         --form-part="bundle-author=$SIDA;type=serval/sid;format=hex" \
+         --form-part="manifest=@manifest1;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file1" \
+         --output=file1.manifest
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code: 1$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload new to store.*$CR\$"
+   extract_http_header H_BID response.headers Serval-Rhizome-Bundle-Id "$rexp_manifestid"
+   extract_http_header H_VERSION response.headers Serval-Rhizome-Bundle-Version "$rexp_version"
+   extract_http_header H_SIZE response.headers Serval-Rhizome-Bundle-Filesize "$rexp_filesize"
+   extract_http_header H_HASH response.headers Serval-Rhizome-Bundle-Filehash "$rexp_filehash"
+   extract_http_header H_TAIL response.headers Serval-Rhizome-Bundle-Tail "$rexp_tail"
+   extract_http_header H_DATE response.headers Serval-Rhizome-Bundle-Date "$rexp_date"
+   extract_http_header H_ROWID response.headers Serval-Rhizome-Bundle-Rowid "$rexp_rowid"
+   extract_http_header H_INSERTTIME response.headers Serval-Rhizome-Bundle-Inserttime "$rexp_date"
+   extract_http_header H_SECRET response.headers Serval-Rhizome-Bundle-Secret "$rexp_bundlesecret"
+   extract_http_header H_SERVICE response.headers Serval-Rhizome-Bundle-Service ".*"
+   extract_http_header H_NAME response.headers Serval-Rhizome-Bundle-Name ".*"
+   http_unquote_string H_NAME
+   extract_http_header H_BK response.headers Serval-Rhizome-Bundle-BK "$rexp_bundlekey"
+   extract_http_header H_AUTHOR response.headers Serval-Rhizome-Bundle-Author "$rexp_bundlekey"
+   assert [ "$H_SIZE" -eq "$file1_size" ]
+   assert [ "$H_SERVICE" = anything ]
+   assert [ "$H_NAME" = hoopla ]
+   assert [ "$H_AUTHOR" = "$SIDA" ]
+   extract_manifest_id BID file1.manifest
+   extract_manifest_version VERSION file1.manifest
+   extract_manifest_filesize SIZE file1.manifest
+   extract_manifest_filehash HASH file1.manifest
+   extract_manifest_tail TAIL file1.manifest
+   extract_manifest_date DATE file1.manifest
+   extract_manifest_service SERVICE file1.manifest
+   extract_manifest_name NAME file1.manifest
+   extract_manifest_BK BK file1.manifest
+   assert [ "$BID" = "$H_BID" ]
+   assert [ "$VERSION" = "$H_VERSION" ]
+   assert [ "$SIZE" = "$H_SIZE" ]
+   assert [ "$HASH" = "$H_HASH" ]
+   assert [ "$TAIL" = "$H_TAIL" ]
+   assert [ "$DATE" = "$H_DATE" ]
+   assert [ "$SERVICE" = "$H_SERVICE" ]
+   assert [ "$NAME" = "$H_NAME" ]
+   assert [ "$BK" = "$H_BK" ]
+   executeOk_servald rhizome list
+   assert_rhizome_list file1
+   executeOk_servald rhizome extract file "$BID" file1x
+   assert --message="extracted payload is correct" diff file1 file1x
+   rest_request POST "/restful/rhizome/append" 201 \
+         --form-part="bundle-id=$BID;type=rhizome/bid;format=hex" \
+         --form-part="bundle-author=$SIDA;type=serval/sid;format=hex" \
+         --form-part="manifest=@manifest2;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file2"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code: 1$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload new to store.*$CR\$"
+}
+
+doc_RhizomeJournalAppendSharedPayload="REST API Rhizome journal append with shared payload"
+setup_RhizomeJournalAppendSharedPayload() {
+   set_extra_config() {
+      executeOk_servald config set rhizome.max_blob_size 0
+   }
+   setup
+   echo 'File one' >file1
+   >manifest1
+   echo 'File two two' >file2
+   >manifest2
+   cat file1 file2 >file12
+   executeOk_servald rhizome add file '' file1
+   extract_stdout_filehash HASH1
+   get_external_blob_path blob_path1 "$HASH1"
+   assert --stderr cmp file1 "$blob_path1"
+   executeOk_servald rhizome add file '' file12
+   extract_stdout_filehash HASH12
+   get_external_blob_path blob_path12 "$HASH12"
+   assert --stderr cmp file12 "$blob_path12"
+   assert --stderr [ $(find "$SERVALINSTANCE_PATH/rhizome/blob" -type f | wc -l) -eq 2 ]
+}
+test_RhizomeJournalAppendSharedPayload() {
+   rest_request POST "/restful/rhizome/append" 201 \
+         --form-part="bundle-author=$SIDA;type=serval/sid;format=hex" \
+         --form-part="manifest=@manifest1;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file1" \
+         --output=file1.manifest
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Bundle-Filehash: $HASH1$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code: 2$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload already in store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload already in store.*$CR\$"
+   assert [ $(find "$SERVALINSTANCE_PATH/rhizome/blob" -type f | wc -l) -eq 2 ]
+   extract_http_header BID response.headers Serval-Rhizome-Bundle-Id "$rexp_manifestid"
+   rest_request POST "/restful/rhizome/append" 201 \
+         --form-part="bundle-id=$BID;type=rhizome/bid;format=hex" \
+         --form-part="manifest=@manifest2;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file2" \
+         --output=file2.manifest
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Bundle-Filehash: $HASH12$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Code: 0$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Bundle-Status-Message: .*bundle new to store.*$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Code: 2$CR\$"
+   assertGrep --matches=1 --ignore-case response.headers "^Serval-Rhizome-Result-Payload-Status-Message: .*payload already in store.*$CR\$"
+   assert [ $(find "$SERVALINSTANCE_PATH/rhizome/blob" -type f | wc -l) -eq 2 ]
+}
+
+doc_RhizomeAppendNonJournalForbidden="REST API Rhizome cannot append to non-journal"
+setup_RhizomeAppendNonJournalForbidden() {
+   setup
+   echo "File One" > file1
+   echo "File Two" > file2
+   >file2.manifest
+   executeOk_servald rhizome add file "$SIDA" file1 file1.manifest
+   tfw_cat --stdout --stderr
+   assert_stdout_add_file file1
+   extract_stdout_manifestid BID
+}
+test_RhizomeAppendNonJournalForbidden() {
+   rest_request POST "/restful/rhizome/append" 422 \
+         --form-part="bundle-id=$BID;type=rhizome/bid;format=hex" \
+         --form-part="manifest=@file2.manifest;type=rhizome/manifest;format=text+binarysig" \
+         --form-part="payload=@file2"
+   assertJq response.json 'contains({"http_status_code": 422})'
+   assertJq response.json 'contains({"http_status_message": "Cannot append to a non-journal"})'
+   assertJqGrep --ignore-case response.json '.http_status_message' 'cannot append.*non.*journal'
+   executeOk_servald rhizome list
+   assert_rhizome_list file1
+}
+
+runTests "$@"

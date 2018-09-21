@@ -1,0 +1,43 @@
+# Makefile.in for Serval DNA Java API
+# vim: noet ts=8 sts=0 sw=8
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+bindir=@bindir@
+sbindir=@sbindir@
+sysconfdir=@sysconfdir@
+localstatedir=@localstatedir@
+srcdir=@srcdir@
+
+JAVAC =		@JAVAC@
+CLASSDIR =	classes
+TESTCLASSDIR =	testclasses
+
+SOURCES := $(shell find $(srcdir)/src -name '*.java')
+TEST_SOURCES := $(shell find $(srcdir)/test -name '*.java')
+
+.PHONY: all check clean classes testclasses
+
+all:	check classes testclasses
+
+check:
+	@if [ -z "$(JAVAC)" ]; then echo "No java compiler configured" >&2; exit 1; fi
+	@if ! $(JAVAC) -version >/dev/null 2>&1; then echo "Java compiler not executable" >&2; exit 1; fi
+
+$(CLASSDIR)/dummy: $(SOURCES)
+	@mkdir -p $(CLASSDIR)
+	@echo "JAVAC $(CLASSDIR)"
+	@$(JAVAC) -Xlint:unchecked -d $(CLASSDIR) $(SOURCES)
+	@touch $@
+
+classes: $(CLASSDIR)/dummy
+
+$(TESTCLASSDIR)/dummy: $(TEST_SOURCES) $(CLASSDIR)/dummy
+	@mkdir -p $(TESTCLASSDIR)
+	@echo "JAVAC $(TESTCLASSDIR)"
+	@$(JAVAC) -Xlint:unchecked -d $(TESTCLASSDIR) -classpath $(CLASSDIR) $(TEST_SOURCES)
+	@touch $@
+
+testclasses: $(TESTCLASSDIR)/dummy
+
+clean:
+	@$(RM) -r $(CLASSDIR) $(TESTCLASSDIR)

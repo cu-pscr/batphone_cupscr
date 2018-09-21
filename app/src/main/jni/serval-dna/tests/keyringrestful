@@ -1,0 +1,251 @@
+#!/bin/bash
+
+# Tests for Serval DNA Keyring REST API
+#
+# Copyright 2013-2015 Serval Project, Inc.
+# Copyright 2016-2018 Flinders Univerity
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+source "${0%/*}/../testframework.sh"
+source "${0%/*}/../testdefs.sh"
+source "${0%/*}/../testdefs_rest.sh"
+
+shopt -s extglob
+
+setup() {
+   setup_rest_utilities
+   setup_servald
+   setup_rest_config +A
+   set_instance +A
+   setup_keyring_config
+   if [ -z "$IDENTITY_COUNT" ]; then
+      create_single_identity
+   else
+      create_identities $IDENTITY_COUNT
+   fi
+   start_servald_instances +A
+   wait_until_rest_server_ready +A
+}
+
+finally() {
+   stop_all_servald_servers
+}
+
+teardown() {
+   kill_all_servald_processes
+   assert_no_servald_processes
+   report_all_servald_servers
+}
+
+setup_keyring_config() {
+   executeOk_servald config \
+      set debug.keyring on \
+      set debug.verbose on \
+      set log.console.level debug
+}
+
+doc_keyringList="REST API list keyring identities as JSON"
+setup_keyringList() {
+   IDENTITY_COUNT=10
+   setup
+}
+test_keyringList() {
+   rest_request GET "/restful/keyring/identities.json"
+   assert [ "$(jq '.rows | length' response.json)" = $IDENTITY_COUNT ]
+   # All SIDs are present in the list.
+   for SID in ${SIDA[*]}; do
+      assert [ "$(jq -r '.rows | contains([["'"$SID"'"]])' response.json)" = true ]
+   done
+}
+
+doc_keyringListPin="REST API list keyring identities as JSON, with PIN"
+setup_keyringListPin() {
+   IDENTITY_COUNT=3
+   PINA1='wif waf'
+   setup
+}
+test_keyringListPin() {
+   # First, list without supplying the PIN
+   rest_request GET "/restful/keyring/identities.json"
+   transform_list_json response.json ids1.json
+   assert [ "$(jq 'length' ids1.json)" = $((IDENTITY_COUNT-1)) ]
+   assertJq ids1.json 'contains([{"sid": "'$SIDA1'"}]) | not'
+   assertJq ids1.json 'contains([{"sid": "'$SIDA2'"}])'
+   assertJq ids1.json 'contains([{"sid": "'$SIDA3'"}])'
+   # Then, list supplying the PIN
+   rest_request GET "/restful/keyring/identities.json?pin=wif+waf"
+   transform_list_json response.json ids2.json
+   assert [ "$(jq 'length' ids2.json)" = $IDENTITY_COUNT ]
+   assertJq ids2.json 'contains([{"sid": "'$SIDA1'"}])'
+   assertJq ids2.json 'contains([{"sid": "'$SIDA2'"}])'
+   assertJq ids2.json 'contains([{"sid": "'$SIDA3'"}])'
+}
+
+doc_keyringGet="REST API get single keyring identity as JSON"
+test_keyringGet() {
+   rest_request GET "/restful/keyring/$SIDA1"
+   assertJq response.json 'contains({"identity": {"sid": "'$SIDA1'", "identity": "'$IDA1'", "did": "'"$DIDA1"'", "name": "'"$NAMEA1"'"}})'
+   rest_request GET "/restful/keyring/$SIDA1"
+   assertJq response.json 'contains({"identity": {"sid": "'$SIDA1'", "identity": "'$IDA1'", "did": "'"$DIDA1"'", "name": "'"$NAMEA1"'"}})'
+}
+
+doc_keyringAdd="REST API add keyring identity"
+setup_keyringAdd() {
+   IDENTITY_COUNT=2
+   setup
+}
+test_keyringAdd() {
+   rest_request POST "/restful/keyring/add?did=" 201
+   SID="$(jq -r '.identity.sid' response.json)"
+   ID="$(jq -r '.identity.identity' response.json)"
+   assert matches_rexp "^${rexp_sid}$" "$SID"
+   assert matches_rexp "^${rexp_id}$" "$ID"
+   executeOk_servald keyring list
+   assert_keyring_list 3
+   assertStdoutGrep --stderr --matches=1 "^$SID:$ID::\$"
+}
+
+doc_keyringAddPin="REST API add keyring identity with PIN"
+setup_keyringAddPin() {
+   IDENTITY_COUNT=2
+   setup
+}
+test_keyringAddPin() {
+   rest_request POST "/restful/keyring/add?pin=1234" 201
+   SID="$(jq -r '.identity.sid' response.json)"
+   ID="$(jq -r '.identity.identity' response.json)"
+   executeOk_servald keyring list
+   assert_keyring_list 2
+   assertStdoutGrep --stderr --matches=0 "^$SID:$ID::\$"
+   executeOk_servald keyring list --entry-pin=1234
+   assert_keyring_list 3
+   assertStdoutGrep --stderr --matches=1 "^$SID:$ID::\$"
+   # Now the server has internalised the PIN, so the new identity appears in the
+   # list
+   rest_request GET "/restful/keyring/identities.json"
+   transform_list_json response.json ids.json
+   assertJq ids.json 'contains([{"sid": "'$SIDA1'"}])'
+}
+
+doc_keyringRemove="REST API remove keyring identity"
+setup_keyringRemove() {
+   IDENTITY_COUNT=2
+   setup
+}
+test_keyringRemove() {
+   rest_request DELETE "/restful/keyring/$SIDA1"
+   SID="$(jq -r '.identity.sid' response.json)"
+   assert [ "$SID" = "$SIDA1" ]
+   executeOk_servald keyring list
+   assert_keyring_list 1
+   assertStdoutGrep --stderr --matches=0 "^$SID:"
+}
+
+doc_keyringSetDidName="REST API set keyring identity DID and name"
+setup_keyringSetDidName() {
+   IDENTITY_COUNT=2
+   setup
+}
+test_keyringSetDidName() {
+   rest_request PATCH "/restful/keyring/$SIDA1?did=987654321&name=Joe%20Bloggs"
+   assertJq response.json 'contains({"identity": {"sid": "'$SIDA1'", "did": "987654321", "name": "Joe Bloggs"}})'
+   executeOk_servald keyring list
+   assert_keyring_list 2
+   assertStdoutGrep --stderr --matches=1 "^$SIDA1:$IDA1:987654321:Joe Bloggs\$"
+}
+
+doc_keyringSetDidNamePin="REST API set keyring identity DID and name with PIN"
+setup_keyringSetDidNamePin() {
+   IDENTITY_COUNT=2
+   PINA1=xyzabc
+   setup
+}
+test_keyringSetDidNamePin() {
+   # First try with no PIN, and make sure it fails
+   rest_request GET "/restful/keyring/$SIDA1/set?did=111222333&name=Nobody" 404
+   # Enter incorrect PIN, and make sure it fails
+   rest_request GET "/restful/keyring/$SIDA1/set?did=444555666&name=Anybody&pin=wrong" 404
+   # Then try with correct PIN, and make sure it succeeds
+   rest_request GET "/restful/keyring/$SIDA1/set?did=987654321&name=Joe%20Bloggs&pin=$PINA1" 200
+   assertJq response.json 'contains({"identity": {"sid": "'$SIDA1'", "did": "987654321", "name": "Joe Bloggs"}})'
+   executeOk_servald keyring list --entry-pin="$PINA1"
+   assert_keyring_list 2
+   assertStdoutGrep --stderr --matches=1 "^$SIDA1:$IDA1:987654321:Joe Bloggs\$"
+   # Finally, try again with no PIN, and make sure it succeeds (server has
+   # internalised the PIN supplied in the last request)
+   rest_request GET "/restful/keyring/$SIDA1/set?did=321321321&name=Fred+Nurks" 200
+   assertJq response.json 'contains({"identity": {"sid": "'$SIDA1'", "did": "321321321", "name": "Fred Nurks"}})'
+   executeOk_servald keyring list --entry-pin="$PINA1"
+   assert_keyring_list 2
+   assertStdoutGrep --stderr --matches=1 "^$SIDA1:$IDA1:321321321:Fred Nurks\$"
+}
+
+doc_keyringLockUnlock="REST API lock and unlock PIN-protected identities"
+setup_keyringLockUnlock() {
+   IDENTITY_COUNT=5
+   PIN1=abc
+   PIN2=xyz
+   PINA2="$PIN1"
+   PINA3="$PIN2"
+   PINA4="$PIN2"
+   PINA5="$PIN2"
+   setup
+   # The initial list of unlocked identities should only be the single non-PIN identity.
+   rest_request GET "/restful/keyring/identities.json"
+   # Unlock PIN1.
+   rest_request GET "/restful/keyring/identities.json?pin=$PIN1"
+   # Unlock PIN2.
+   rest_request GET "/restful/keyring/identities.json?pin=$PIN2"
+   transform_list_json response.json ids_setup.json
+   assert [ "$(jq 'length' ids_setup.json)" = $IDENTITY_COUNT ]
+   assertJq ids_setup.json 'contains([{"sid": "'$SIDA1'"}])'
+   assertJq ids_setup.json 'contains([{"sid": "'$SIDA2'"}])'
+   assertJq ids_setup.json 'contains([{"sid": "'$SIDA3'"}])'
+   assertJq ids_setup.json 'contains([{"sid": "'$SIDA4'"}])'
+   assertJq ids_setup.json 'contains([{"sid": "'$SIDA5'"}])'
+}
+test_keyringLockUnlock() {
+   # Lock the only PIN1 identity and assert that it no longer appears in the
+   # identity list.
+   rest_request PUT "/restful/keyring/$SIDA2/lock"
+   assertJq response.json 'contains({"identity": {"sid": "'$SIDA2'", "identity": "'"$IDA2"'"}})'
+   rest_request GET "/restful/keyring/identities.json"
+   transform_list_json response.json ids1.json
+   assert [ "$(jq 'length' ids1.json)" = $((IDENTITY_COUNT - 1)) ]
+   assertJq ids1.json 'contains([{"sid": "'$SIDA2'"}]) | not'
+   # Lock the second PIN2 identity and assert that it no longer appears in the
+   # identity list.
+   rest_request PUT "/restful/keyring/$SIDA4/lock"
+   assertJq response.json 'contains({"identity": {"sid": "'$SIDA4'", "identity": "'"$IDA4"'"}})'
+   rest_request GET "/restful/keyring/identities.json"
+   transform_list_json response.json ids2.json
+   assert [ "$(jq 'length' ids2.json)" = $((IDENTITY_COUNT - 2)) ]
+   assertJq ids2.json 'contains([{"sid": "'$SIDA4'"}]) | not'
+   # Unlock PIN1 and assert that all PIN1 identities now appear in the identity
+   # list.
+   rest_request GET "/restful/keyring/identities.json?pin=$PIN1"
+   transform_list_json response.json ids3.json
+   assert [ "$(jq 'length' ids3.json)" = $((IDENTITY_COUNT - 1)) ]
+   assertJq ids3.json 'contains([{"sid": "'$SIDA2'"}])'
+   # Unlock PIN2 and assert that all PIN2 identities now appear in the identity
+   # list.
+   rest_request GET "/restful/keyring/identities.json?pin=$PIN2"
+   transform_list_json response.json ids4.json
+   assert [ "$(jq 'length' ids4.json)" = $IDENTITY_COUNT ]
+   assertJq ids4.json 'contains([{"sid": "'$SIDA4'"}])'
+}
+
+runTests "$@"
