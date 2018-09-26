@@ -223,11 +223,13 @@ android.applicationVariants.all { variant ->
             }
         }
 
-        pandocTask(variantName, "CURRENT-RELEASE.md", "Release Notes")
-        pandocTask(variantName, "CREDITS.md", "Credits")
-        pandocTask(variantName, "LICENSE-SOFTWARE.md", "Software License")
-        pandocTask(variantName, "CC-BY-4.0.md", "Documentation License")
-        pandocTask(variantName, "PRIVACY.md", "Privacy Policy")
+        // Brandon Sep. 26 2018
+        // I removed pandocTask because I'm not sure how it can be called in Andriod Studio.
+        //pandocTask(variantName, "CURRENT-RELEASE.md", "Release Notes")
+        //pandocTask(variantName, "CREDITS.md", "Credits")
+        //pandocTask(variantName, "LICENSE-SOFTWARE.md", "Software License")
+        //pandocTask(variantName, "CC-BY-4.0.md", "Documentation License")
+        //pandocTask(variantName, "PRIVACY.md", "Privacy Policy")
 
         output.processResources.dependsOn "assetZip${variantName}"
         output.processResources.dependsOn "assetManifest${variantName}"
