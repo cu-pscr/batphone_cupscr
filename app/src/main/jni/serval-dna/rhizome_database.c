@@ -309,7 +309,11 @@ int rhizome_opendb()
     RETURN(-1);
 
   // Inform SQLite of its temporary directory.
-  assert(!sqlite3_temp_directory);
+  // Brandon Sep. 28 2018
+  // sqlite3_temp_directory cannot be NULL by other operations.
+  // It may because of some misbehavior in an operation, 
+  // but anyway let me simply change the directory.
+  //assert(!sqlite3_temp_directory);
   sqlite3_temp_directory = sqlite3_mprintf("%s", temppath);
 
   // Set up SQLite logging.
