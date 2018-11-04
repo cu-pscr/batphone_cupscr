@@ -20,7 +20,8 @@
  -->
 	<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
           android:layout_width="fill_parent"
-          android:layout_height="fill_parent" >
+          android:layout_height="fill_parent"
+            android:background="@color/white">
 
           <!-- Header -->
 
@@ -67,17 +68,20 @@
             <TextView
                 android:id="@+id/callText"
                 style="@style/smainTableRowText"
-                android:text="@string/callLabel" />
+                android:text="@string/callLabel"
+                android:textColor="@color/customblack"/>
 			
 			<TextView 
 			    android:id="@+id/messageText"
 				style="@style/smainTableRowText" 
-				android:text="@string/messageLabel" />
+				android:text="@string/messageLabel"
+                android:textColor="@color/customblack"/>
 			
 			<TextView 
 			    android:id="@+id/contactsText"
 				style="@style/smainTableRowText" 
-				android:text="@string/contactsLabel" />
+				android:text="@string/contactsLabel"
+                android:textColor="@color/customblack"/>
 			
 		</TableRow>
 		
@@ -89,7 +93,7 @@
            	    android:id="@+id/mapsLabel"
        			android:contentDescription="@string/mapsLabel"
          		android:src="@drawable/ic_launcher_map"
-       			style="@style/smainTableIcon" /> 
+       			style="@style/smainTableIcon" />
        			
     	    <ImageView 
     	        android:id="@+id/sharingLabel"
@@ -112,17 +116,20 @@
 			<TextView 
 			    android:id="@+id/mapsText"
                 style="@style/smainTableRowText"
-				android:text="@string/mapsLabel" />
+				android:text="@string/mapsLabel"
+                android:textColor="@color/customblack"/>
 			
 			<TextView 
 			    android:id="@+id/sharingText"
                 style="@style/smainTableRowText"
-				android:text="@string/sharingLabel" />
+				android:text="@string/sharingLabel"
+                android:textColor="@color/customblack"/>
 			
 			<TextView 
 			    android:id="@+id/wifiText"
                 style="@style/smainTableRowText"
-				android:text="@string/servalLabel" />
+				android:text="@string/servalLabel"
+                android:textColor="@color/customblack"/>
 			
 		</TableRow>   
 		
@@ -158,17 +165,20 @@
 			<TextView 
 			    android:id="@+id/settingsText"
                 style="@style/smainTableRowText"
-				android:text="@string/settingsLabel" />
+				android:text="@string/settingsLabel"
+                android:textColor="@color/customblack"/>
 			
 			<TextView 
 			    android:id="@+id/btntoggle"
                 style="@style/smainTableRowText" 
-				android:text="@string/connectLabel" />
+				android:text="@string/connectLabel"
+                android:textColor="@color/customblack"/>
 			
 			<TextView 
 			    android:id="@+id/helpText"
                 style="@style/smainTableRowText"
-				android:text="@string/helpLabel" />
+				android:text="@string/helpLabel"
+                android:textColor="@color/customblack"/>
 			
 		</TableRow>
 
@@ -181,12 +191,16 @@
           		<TextView
     		        android:id="@+id/phonelabel"
     		        style="@style/stextleft1"
-    		        android:text="@string/PhoneDetails" />
+    		        android:text="@string/PhoneDetails"
+                    android:background="@color/white"
+                    android:textColor="@color/customblack"/>
 
     		    <TextView
     		        android:id="@+id/mainphonenumber"
     		        style="@style/stextright1" 
-    		        android:layout_toRightOf="@+id/phonelabel"/>	
+    		        android:layout_toRightOf="@+id/phonelabel"
+                    android:background="@color/white"
+                    android:textColor="@color/customblack"/>
 	</RelativeLayout>
 		
 

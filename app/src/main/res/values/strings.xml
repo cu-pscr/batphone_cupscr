@@ -32,6 +32,9 @@
 	<string name="app_name">Serval Mesh</string>
 	<string name="agree">I agree</string>
 	<string name="cancel">Cancel</string>
+
+    <!-- Access Token for Mapbox API -->
+    <string name="access_token">pk.eyJ1IjoiY3Vwc2NyIiwiYSI6ImNqbjIwMzhzMjAyNDAzcGx2bHJkczlreHkifQ._j_V0I0Qty9HuP0BYJTH_g</string>
 	
 	<!-- Serval Main -->
 	<!-- These must say Serval Mesh, not Serval Network, because Serval provides the protocol, not the infrastructure.

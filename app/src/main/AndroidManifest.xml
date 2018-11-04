@@ -50,6 +50,9 @@
         android:label="@string/system_permission_meshms_send_label"
         />
 
+	<!-- Cathleen edit: Location permissions for Mapbox/Map functionality -->
+	<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
     <!-- Serval Specific permissions -->
     <uses-permission android:name="org.servalproject.meshms.SEND_MESHMS"/>
     <uses-permission android:name="org.servalproject.rhizome.RECEIVE_FILE"/>

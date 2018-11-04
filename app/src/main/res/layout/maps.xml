@@ -19,25 +19,24 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  -->
 	<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
-          android:layout_width="fill_parent"
-          android:layout_height="fill_parent" >
+		xmlns:mapbox="http://schemas.android.com/apk/res-auto"
+          android:layout_width="match_parent"
+          android:layout_height="match_parent" >
 
           <!-- Header -->
 
           <include
               android:id="@+id/headerLayout"
               layout="@layout/header_layout" />
-          <!-- Body -->
-          
-           <TextView android:id="@+id/noMaps"
-         		style="@style/stext"
-         		android:text="@string/mapInfo" 
-         		android:autoLink="web" 
-         		android:linksClickable="true"/>
+          <!-- Cathleen edit: Mapbox layout from first map  -->
 
-         	<TextView android:id="@+id/enquiryEmail"
-             	style="@style/splainurlcentre"
-            	 android:layout_alignBottom="@+id/noMaps"
-             	android:text="@string/emailEnquiries" />
+			<com.mapbox.mapboxsdk.maps.MapView
+				android:id="@+id/mapView"
+				android:layout_width="match_parent"
+				android:layout_height="match_parent"
+				mapbox:mapbox_cameraTargetLat="39.92054"
+				mapbox:mapbox_cameraTargetLng="-105.0867"
+				mapbox:mapbox_styleUrl="@string/mapbox_style_mapbox_streets"
+				mapbox:mapbox_cameraZoom="19"/>
            
 </RelativeLayout>

@@ -13,14 +13,18 @@
          style="@style/sheader"
          android:layout_alignTop="@+id/logot_image"
          android:layout_toRightOf="@+id/logot_image"
-         android:text="@string/header" />
+         android:text="@string/header"
+         android:textColor="@color/customblack"
+         android:background="@color/white"/>
 
      <TextView
          android:id="@+id/url"
          style="@style/surl"
          android:layout_alignBottom="@+id/logot_image"
          android:layout_alignLeft="@+id/header"
-         android:text="@string/url" />
+         android:text="@string/url"
+         android:textColor="@color/customblack"
+         android:background="@color/white"/>
 
      <TextView
          android:id="@+id/warning1"
