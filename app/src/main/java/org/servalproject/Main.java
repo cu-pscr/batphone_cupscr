@@ -82,7 +82,7 @@ public class Main extends Activity implements OnClickListener {
 
 		} catch (NameNotFoundException e) {
 			startActivity(new Intent(getApplicationContext(),
-					org.servalproject.ui.MapsActivity.class));
+					org.servalproject.ui.SimpleOfflineMapActivity.class)); // changed from MapsActivity to SimpleOfflineMapActivity
 		}
 	}
 

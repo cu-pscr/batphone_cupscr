@@ -31,16 +31,18 @@
      <color name="customblack">#0a0b0b</color>
      <color name="orange">#ffcc7948</color>
      <color name="gold">#f2cc10</color>
-    
-<!--     SIPDroid In-call UI - to be removed
-    <color name="incall_textConnected">#99CE3F</color>  green
-    <color name="incall_textConnected">#40CEA3</color>   
-    <color name="incall_textEnded">#FF6072</color> red
-    <color name="incall_textOnHold">#FF9524</color> orange
-    
-    SIPDroid DTMF Dialer
-    <color name="dtmf_dialer_background">#333333</color> green
-    <color name="recording_time_elapsed_text">#FFFFFFFF</color>
-    <color name="recording_time_remaining_text">#FFFF0033</color> -->
+     <color name="colorAccent">#FFFFE0</color>
+
+
+     <!--     SIPDroid In-call UI - to be removed
+         <color name="incall_textConnected">#99CE3F</color>  green
+         <color name="incall_textConnected">#40CEA3</color>
+         <color name="incall_textEnded">#FF6072</color> red
+         <color name="incall_textOnHold">#FF9524</color> orange
+
+         SIPDroid DTMF Dialer
+         <color name="dtmf_dialer_background">#333333</color> green
+         <color name="recording_time_elapsed_text">#FFFFFFFF</color>
+         <color name="recording_time_remaining_text">#FFFF0033</color> -->
 
   </resources>

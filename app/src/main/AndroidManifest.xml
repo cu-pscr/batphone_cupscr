@@ -327,7 +327,7 @@
 		    android:screenOrientation="portrait"
             android:launchMode="singleTop"
 		    />
-		<activity android:name=".ui.MapsActivity"
+		<activity android:name=".ui.SimpleOfflineMapActivity"
 		    android:screenOrientation="portrait"
             android:launchMode="singleTop"
 		    />
