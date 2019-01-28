@@ -50,6 +50,11 @@ import android.widget.BaseAdapter;
 import android.widget.ListView;
 import android.widget.TextView;
 
+/*
+Code that picks the folder HERE
+TODO change to internal storage accessed instead of external storage
+ */
+
 public class FolderPicker extends Dialog implements OnItemClickListener, OnClickListener {
 
 	private final ListView mFolders;
@@ -78,7 +83,14 @@ public class FolderPicker extends Dialog implements OnItemClickListener, OnClick
 		setTitle(acceptFiles? R.string.pick_file : R.string.pick_folder);
 		setContentView(R.layout.folders);
 
-		mStorageFolder = Environment.getExternalStorageDirectory();
+		//mStorageFolder = Environment.getExternalStorageDirectory(); // get external storage HERE
+		//TODO change this to internal storage to access .db file with offline map data
+		// Return the primary shared/external storage directory
+		// try get files directory
+		//mStorageFolder = context.getExternalFilesDir(null);
+		mStorageFolder = context.getFilesDir();
+
+		// another plan: just get file path and share it
 
 		mOkButton = findViewById(R.id.ok_btn);
 		mOkButton.setOnClickListener(this);
