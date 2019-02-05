@@ -41,6 +41,7 @@
                 android:id="@+id/rhizome_header"
                 style="@style/srhizome_header"
                 android:text="@string/rhizome_header"
+                android:background="@color/cuBlack"
                 />
         </TableRow>	
         <TableRow 
@@ -120,6 +121,7 @@
     <TextView
             android:id="@+id/security_status"
             style="@style/security_status"
-            android:text="@string/security_status" />
+            android:text="@string/security_status"
+            android:background="@color/cuBlack"/>
           
 </RelativeLayout>

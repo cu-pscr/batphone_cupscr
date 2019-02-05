@@ -1,12 +1,13 @@
 
  <!-- Header -->
  
- <merge xmlns:android="http://schemas.android.com/apk/res/android">      
+ <merge xmlns:android="http://schemas.android.com/apk/res/android">
 
-     <ImageView
-         android:id="@+id/logot_image"
-         style="@style/slogo"
-         android:contentDescription="@string/logoid" />
+    <ImageView
+        android:id="@+id/logot_image"
+        style="@style/slogo"
+        android:contentDescription="@string/logoid"
+        android:background="@color/cuBlack"/>
 
      <TextView
          android:id="@+id/header"
@@ -14,30 +15,34 @@
          android:layout_alignTop="@+id/logot_image"
          android:layout_toRightOf="@+id/logot_image"
          android:text="@string/header"
-         android:textColor="@color/customblack"
-         android:background="@color/white"/>
+         android:textColor="@color/cuGold"
+         android:background="@color/cuBlack"/>
 
      <TextView
          android:id="@+id/url"
          style="@style/surl"
          android:layout_alignBottom="@+id/logot_image"
          android:layout_alignLeft="@+id/header"
-         android:text="@string/url"
-         android:textColor="@color/customblack"
-         android:background="@color/white"/>
+         android:text="@string/header2"
+         android:textColor="@color/cuLightGrey"
+         android:background="@color/cuBlack"/>
 
      <TextView
          android:id="@+id/warning1"
          style="@style/swarning1"
          android:layout_alignParentRight="true"
          android:layout_alignParentTop="true"
-         android:text="@string/warning1" />
+         android:text="@string/warning1"
+         android:background="@color/cuBlack"
+         android:textColor="@color/cuDarkGrey"/>
 
      <TextView
          android:id="@+id/warning2"
          style="@style/swarning2"
          android:layout_alignRight="@+id/warning1"
          android:layout_below="@+id/warning1"
-         android:text="@string/warning2" />
+         android:text="@string/warning2"
+         android:background="@color/cuBlack"
+         android:textColor="@color/cuDarkGrey"/>
 </merge>
      

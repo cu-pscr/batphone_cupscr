@@ -32,6 +32,10 @@
      <color name="orange">#ffcc7948</color>
      <color name="gold">#f2cc10</color>
      <color name="colorAccent">#FFFFE0</color>
+     <color name="cuGold">#CFB87C</color>
+     <color name="cuBlack">#000000</color>
+     <color name="cuDarkGrey">#565A5C</color>
+     <color name="cuLightGrey">#A2A4A3</color>
 
 
      <!--     SIPDroid In-call UI - to be removed
