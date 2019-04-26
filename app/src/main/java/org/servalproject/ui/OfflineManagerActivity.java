@@ -3,6 +3,7 @@ package org.servalproject.ui;
 import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.os.Bundle;
+import android.app.Activity;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 import android.view.View;
@@ -24,13 +25,15 @@ import com.mapbox.mapboxsdk.offline.OfflineRegion;
 import com.mapbox.mapboxsdk.offline.OfflineRegionError;
 import com.mapbox.mapboxsdk.offline.OfflineRegionStatus;
 import com.mapbox.mapboxsdk.offline.OfflineTilePyramidRegionDefinition;
+import android.os.Environment;
 
 import org.json.JSONObject;
 import org.servalproject.R;
 
+import java.io.File;
 import java.util.ArrayList;
 
-public class OfflineManagerActivity extends AppCompatActivity {
+public class OfflineManagerActivity extends Activity {
     private static final String TAG = "OffManActivity";
 
     // JSON encoding/decoding
@@ -43,6 +46,7 @@ public class OfflineManagerActivity extends AppCompatActivity {
     private ProgressBar progressBar;
     private Button downloadButton;
     private Button listButton;
+    private Button mergeButton;
 
     private boolean isEndNotified;
     private int regionSelected;
@@ -97,6 +101,15 @@ public class OfflineManagerActivity extends AppCompatActivity {
                 downloadedRegionList();
             }
         });
+
+        mergeButton = (Button) findViewById(R.id.merge_button);
+        mergeButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                mergeOfflineRegions();
+            }
+        });
+
     }
 
     // Override Activity lifecycle methods
@@ -140,6 +153,39 @@ public class OfflineManagerActivity extends AppCompatActivity {
     public void onLowMemory() {
         super.onLowMemory();
         mapView.onLowMemory();
+    }
+
+    private void mergeOfflineRegions() {
+        //File offlineMap = new File(Environment.getExternalStorageDirectory(), "mbgl-offline.db");
+        //String path = offlineMap.getAbsolutePath();
+        //String path = "/storage/self/primary/Android/data/org.servalproject/files/rhizome/saved/mbgl-offline.db";
+        //File offlineFile = new File(path);
+        //String path2 = offlineFile.getAbsolutePath();
+
+        File offlineMap = new File(Environment.getExternalStorageDirectory(), "boulder2.db");
+        String path = offlineMap.getAbsolutePath();
+
+        Log.d("STATEc", path);
+        Log.d("STATEc", offlineMap.getName());
+
+        if (offlineMap.exists())
+            offlineManager.mergeOfflineRegions(path, new OfflineManager.MergeOfflineRegionsCallback() {
+                @Override
+                public void onMerge(OfflineRegion[] offlineRegions) {
+                    Log.d("STATE:",String.format("Merged: %d regions", offlineRegions.length));
+                    Toast.makeText(OfflineManagerActivity.this, R.string.mergeDB_progress_success, Toast.LENGTH_LONG).show();
+                }
+
+                @Override
+                public void onError(String error) {
+                    //showStatus("Error merging regions: " + error);
+                    Toast.makeText(OfflineManagerActivity.this, R.string.mergeDB_error, Toast.LENGTH_LONG).show();
+                }
+            });
+        else {
+            //showStatus("File does not exist!");
+            Toast.makeText(OfflineManagerActivity.this, R.string.mergeDB_noFilesFound, Toast.LENGTH_LONG).show();
+        }
     }
 
     private void downloadRegionDialog() {
@@ -287,6 +333,8 @@ public class OfflineManagerActivity extends AppCompatActivity {
                     Toast.makeText(getApplicationContext(), getString(R.string.toast_no_regions_yet), Toast.LENGTH_SHORT).show();
                     return;
                 }
+
+                Log.d("STATE:",String.format("offline regions: %d",offlineRegions.length));
 
                 // Add all of the region names to a list
                 ArrayList<String> offlineRegionsNames = new ArrayList<>();

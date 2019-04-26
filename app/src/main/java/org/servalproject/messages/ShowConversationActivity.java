@@ -224,6 +224,7 @@ public class ShowConversationActivity extends ListActivity implements OnClickLis
 			}
 
 			@Override
+            @SuppressWarnings({"unchecked"})
 			protected List<Object> doInBackground(Void... voids) {
 				try{
 					MeshMSMessageList results = app.server.getRestfulClient().meshmsListMessages(identity.sid, recipient.sid);

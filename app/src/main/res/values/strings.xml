@@ -29,7 +29,7 @@
     <string name="header2">CUPSCR - BOULDER</string>
     <string name="warning1">EXPERIMENTAL</string>
     <string name="warning2">SOFTWARE</string>
-	<string name="app_name">Serval Mesh</string>
+	<string name="app_name">CUPSCR</string>
 	<string name="agree">I agree</string>
 	<string name="cancel">Cancel</string>
 
@@ -54,9 +54,16 @@
 
     <!--SimpleOfflineMapActivity activity-->
     <string name="simple_offline_end_progress_success">Region downloaded successfully.</string>
+    <string name="simple_offline_deleteFiles_success">Previous map was successfully deleted</string>
+    <string name="simple_offline_deleteFiles_noFilesFound">No previous history found</string>
 
     <string name="download_button_text">Download</string>
     <string name="list_button_text">List</string>
+
+    <!--Merged Offline Databases activity-->
+    <string name="mergeDB_progress_success">Offline regions merged.</string>
+    <string name="mergeDB_error">Error, regions not merged</string>
+    <string name="mergeDB_noFilesFound">File does not exist</string>
 
 
 

@@ -13,7 +13,6 @@
         android:layout_height="match_parent"
         mapbox:mapbox_cameraTargetLat="29.720"
         mapbox:mapbox_cameraTargetLng="-95.342"
-        mapbox:mapbox_styleUrl="@string/mapbox_style_light"
         mapbox:mapbox_cameraZoom="15.27"
         mapbox:mapbox_cameraZoomMin="10"/>
 
@@ -28,13 +27,19 @@
         android:paddingRight="25dp"
         android:visibility="gone"/>
 
+    <Button
+        android:id="@+id/merge_button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Merge Regions" />
+
     <LinearLayout
         android:id="@+id/bottom_navigation"
         style="?android:attr/buttonBarStyle"
         android:layout_width="match_parent"
         android:layout_height="56dp"
         android:layout_alignParentBottom="true"
-        android:background="@color/colorAccent"
+        android:background="@color/cuGold"
         android:elevation="8dp"
         android:orientation="horizontal"
         android:paddingTop="8dp">
@@ -50,7 +55,7 @@
             android:drawableTop="@drawable/ic_get_app_24dp"
             android:text="@string/download_button_text"
             android:textAllCaps="false"
-            android:textColor="@color/white"
+            android:textColor="@color/cuBlack"
             android:textSize="12sp"/>
 
         <Button
@@ -63,7 +68,7 @@
             android:drawableTop="@drawable/ic_list_24dp"
             android:text="@string/list_button_text"
             android:textAllCaps="false"
-            android:textColor="@color/white"
+            android:textColor="@color/cuBlack"
             android:textSize="12sp"/>
 
     </LinearLayout>
