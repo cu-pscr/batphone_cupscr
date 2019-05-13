@@ -156,13 +156,10 @@ public class OfflineManagerActivity extends Activity {
     }
 
     private void mergeOfflineRegions() {
-        //File offlineMap = new File(Environment.getExternalStorageDirectory(), "mbgl-offline.db");
-        //String path = offlineMap.getAbsolutePath();
-        //String path = "/storage/self/primary/Android/data/org.servalproject/files/rhizome/saved/mbgl-offline.db";
-        //File offlineFile = new File(path);
-        //String path2 = offlineFile.getAbsolutePath();
 
-        File offlineMap = new File(Environment.getExternalStorageDirectory(), "boulder2.db");
+        // hardcoded here, change db file name
+
+        File offlineMap = new File(Environment.getExternalStorageDirectory(), "boulder6.db");
         String path = offlineMap.getAbsolutePath();
 
         Log.d("STATEc", path);
